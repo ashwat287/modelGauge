@@ -57,6 +57,7 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("POST /v1/nodes/{nodeID}/model-installs/{jobID}/renew", s.requireAgent(s.renewInstall))
 	s.mux.HandleFunc("GET /v1/model-installs/{jobID}", s.requireAdmin(s.installStatus))
 	s.mux.HandleFunc("GET /v1/plans/{planID}", s.requireAdmin(s.planStatus))
+	s.mux.HandleFunc("GET /v1/nodes/{nodeID}/export", s.requireAdmin(s.exportNode))
 	s.mux.HandleFunc("GET /v1/nodes/{nodeID}/results", s.requireAdmin(s.listResults))
 	s.mux.HandleFunc("GET /v1/nodes/{nodeID}/recommendation", s.requireAdmin(s.recommend))
 	s.mux.HandleFunc("POST /v1/nodes/register", s.requireAgent(s.registerNode))

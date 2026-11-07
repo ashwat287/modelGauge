@@ -98,7 +98,7 @@ sequenceDiagram
 The agent serializes model installation and benchmarks on the node. The database
 serializes claims across both queues; host/user locks also protect direct runs.
 Two different Unix users or external workloads can still interfere. See
-[job recovery](../deploy/JOB-RECOVERY.md) for interruption and cancellation semantics.
+[job recovery](operations/JOB-RECOVERY.md) for interruption and cancellation semantics.
 
 ## 🧱 Isolation and measurement identity
 

@@ -3,7 +3,7 @@
 [📚 Documentation home](../../README.md)
 
 
-These files deploy the ModelGauge Go controller and its PostgreSQL store to a
+The assets in `deploy/k3s/` deploy the ModelGauge Go controller and its PostgreSQL store to a
 single-node k3s cluster. They deliberately do not contain credentials.
 
 ## 🔧 Prerequisites
@@ -16,9 +16,10 @@ single-node k3s cluster. They deliberately do not contain credentials.
 
 ## 🚀 First deployment
 
-Run these commands from this directory:
+From the repository root, enter the deployment asset directory first:
 
 ```sh
+cd deploy/k3s
 chmod +x create-secrets.sh deploy.sh
 ./create-secrets.sh
 ./deploy.sh ghcr.io/YOUR_GITHUB_USER/modelgauge:TAG
@@ -73,7 +74,7 @@ modelgauge agent run --once
 ```
 
 `agent run` is foreground and reads exported environment variables. For a
-persistent service use [manual agent enrollment](../../docs/CONFIGURATION.md).
+persistent service use [manual agent enrollment](../CONFIGURATION.md).
 
 The current development authentication model uses one shared agent token.
 Per-node credentials, TLS, image signing, and secret rotation are production

@@ -22,6 +22,9 @@ import (
 )
 
 func Run(args []string, stdout, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "_guest" {
+		return runGuest(args[1:], stdout, stderr)
+	}
 	if handled, code := showRequestedHelp(args, stdout); handled {
 		return code
 	}
@@ -32,6 +35,10 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 
 	switch args[0] {
+	case "export":
+		return runExport(args[1:], stdout, stderr)
+	case "cleanup":
+		return runCleanup(args[1:], stdout, stderr)
 	case "control":
 		return runControl(args[1:], stdout, stderr)
 	case "monitoring":
@@ -368,6 +375,8 @@ Usage: modelgauge <command> [options]
 🏗️  Infrastructure
   control bootstrap   Create/reuse a Lima k3s control plane
   control status      Inspect cluster workloads and persistent storage
+  cleanup             Remove verified owned resources; --dry-run previews
+  cleanup --delete-vms  Also delete only VMs ModelGauge created
   node bootstrap      Create/reuse a separate Linux benchmark VM
   node list           List registered measured nodes (JSON)
   node status ID      Inspect a registered node (JSON)
@@ -392,6 +401,7 @@ Usage: modelgauge <command> [options]
   plan validate FILE         Validate a plan without running it
 
 📈 Results and monitoring
+  export --node ID --output DIR  Save results, CSV, metrics and optional evidence
   results show --node ID     Read stored measurements (JSON)
   results recommend         Recommend threads and memory fit (JSON)
   monitoring open           Forward and open Grafana

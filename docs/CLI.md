@@ -33,6 +33,7 @@ modelgauge monitoring open
 | `--provider` | `lima` | Only automated provider |
 | `--name` | saved active VM or `modelgauge-control` | Create/reuse VM |
 | `--source` | auto checkout for development | Build controller locally using Go |
+| `--helper-binary` | automatic matching Linux executable | Development override for the Linux guest helper when using an image without source |
 | `--image` | matching release image for release CLI | Explicit prebuilt controller reference |
 | `--cpus`, `--memory`, `--disk` | `4`, `6`, `50` | New VM resources; memory/disk in GiB |
 | `--port` | saved API port or `18080` | Host loopback API port |
@@ -181,3 +182,35 @@ its managed path instead. Uninstall removes the service and retains files.
 `agent run --once` attempts at most one work cycle, not the entire queue.
 The server applies embedded migrations by default. Structured server/agent logs
 remain JSON on stderr. See [configuration](CONFIGURATION.md) for environment variables.
+
+## 🧹 Cleanup (current source build)
+
+```sh
+modelgauge cleanup --dry-run --delete-vms
+modelgauge cleanup
+modelgauge cleanup --delete-vms
+```
+
+Default cleanup removes verified managed guest paths and owned user services but
+keeps VMs. `--delete-vms` additionally deletes only VMs created by this tracked
+bootstrap. A dry run never starts stopped VMs. JSON reports distinguish reused,
+untracked and owned targets. Pending/active work and ownership mismatches block
+cleanup. Legacy v0.1.0 installations cannot be automatically adopted.
+See [ownership and retry details](operations/CLEANUP.md).
+
+## 📦 Export (current source CLI and controller)
+
+```sh
+modelgauge export --node benchmark-node --output exports/results
+modelgauge export --node benchmark-node --output exports/evidence --include-raw
+modelgauge export --node benchmark-node --output exports/history \
+  --prometheus-url http://127.0.0.1:9090 \
+  --start 2026-11-07T10:00:00Z --end 2026-11-07T11:00:00Z --step 30s
+```
+
+`--output` must not exist. The bundle includes JSON/CSV results, node/plan/run
+metadata, current controller-wide metrics and checksums. Use `--include-raw` for
+a tracked running Lima node, or `--raw-from DIRECTORY` for copied local run
+folders. History is optional and uses explicit RFC3339 times; repeat `--query`
+to replace default PromQL selectors. Normal controller/admin overrides apply.
+See [export contents, limits and verification](operations/EXPORT.md) before cleanup.

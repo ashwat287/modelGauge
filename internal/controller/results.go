@@ -50,8 +50,15 @@ type Recommendation struct {
 	AlgorithmVersion          string  `json:"algorithm_version"`
 }
 
+type resultQuerier interface {
+	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
 func (s *Store) ListResults(ctx context.Context, nodeID string) ([]RunSummary, error) {
-	rows, err := s.pool.Query(ctx, `
+	return listResults(ctx, s.pool, nodeID)
+}
+func listResults(ctx context.Context, q resultQuerier, nodeID string) ([]RunSummary, error) {
+	rows, err := q.Query(ctx, `
 SELECT run.run_id, run.plan_id::text, run.node_id,
        plan.specification #>> '{model,id}', run.execution_mode, run.status,
        COALESCE(to_char(run.completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), ''),
@@ -71,18 +78,30 @@ ORDER BY run.completed_at DESC`, nodeID)
 		if err := rows.Scan(&result.RunID, &result.PlanID, &result.NodeID, &result.ModelID, &result.ExecutionMode, &result.Status, &result.CompletedAt, &result.PeakRSSBytes, &result.SafeReservationBytes, &result.InvalidReason, &result.Recovered); err != nil {
 			return nil, err
 		}
-		cases, err := s.casesForRun(ctx, result.RunID)
+		results = append(results, result)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return nil, err
+	}
+	// A repeatable-read transaction uses one connection. Drain the run rows
+	// before issuing case queries rather than leaving that connection busy.
+	for i := range results {
+		cases, err := casesForRun(ctx, q, results[i].RunID)
 		if err != nil {
 			return nil, err
 		}
-		result.Cases = cases
-		results = append(results, result)
+		results[i].Cases = cases
 	}
-	return results, rows.Err()
+	return results, nil
 }
 
 func (s *Store) casesForRun(ctx context.Context, runID string) ([]StoredCase, error) {
-	rows, err := s.pool.Query(ctx, `SELECT case_id, threads, prompt_tokens, generation_tokens, repetitions, average_tokens_per_second, stddev_tokens_per_second FROM benchmark_cases WHERE run_id = $1 ORDER BY case_id`, runID)
+	return casesForRun(ctx, s.pool, runID)
+}
+func casesForRun(ctx context.Context, q resultQuerier, runID string) ([]StoredCase, error) {
+	rows, err := q.Query(ctx, `SELECT case_id, threads, prompt_tokens, generation_tokens, repetitions, average_tokens_per_second, stddev_tokens_per_second FROM benchmark_cases WHERE run_id = $1 ORDER BY case_id`, runID)
 	if err != nil {
 		return nil, err
 	}

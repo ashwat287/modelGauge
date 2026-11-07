@@ -18,16 +18,19 @@ import (
 	"time"
 
 	"github.com/nerdylucifer/modelgauge/deploy"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
 )
 
 type Config struct {
 	VM            string `json:"vm"`
+	OwnerID       string `json:"owner_id,omitempty"`
 	ControllerURL string `json:"controller_url"`
 	AdminToken    string `json:"admin_token"`
 	AgentToken    string `json:"agent_token"`
 }
 type Options struct {
 	Name, Image, Source, K3sVersion, BenchmarkTarget string
+	HelperBinary                                     string
 	CPUs, MemoryGiB, DiskGiB, Port                   int
 	Log                                              io.Writer
 }
@@ -57,14 +60,10 @@ func Save(c Config) error {
 	if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 		return err
 	}
-	data, err := json.MarshalIndent(c, "", "  ")
-	if err != nil {
-		return err
+	if info, err := os.Lstat(path); err == nil && !info.Mode().IsRegular() {
+		return fmt.Errorf("refusing to overwrite a non-regular control connection")
 	}
-	if err = os.WriteFile(path, data, 0600); err != nil {
-		return err
-	}
-	return os.Chmod(path, 0600)
+	return platform.WriteJSON(path, c, 0600)
 }
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
@@ -89,7 +88,7 @@ func capture(ctx context.Context, name, script string) (string, error) {
 	return strings.TrimSpace(out.String()), nil
 }
 
-func Bootstrap(ctx context.Context, o Options) (Config, error) {
+func Bootstrap(ctx context.Context, o Options) (result Config, resultErr error) {
 	if !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`).MatchString(o.Name) {
 		return Config{}, fmt.Errorf("invalid VM name")
 	}
@@ -99,30 +98,15 @@ func Bootstrap(ctx context.Context, o Options) (Config, error) {
 	if o.Log == nil {
 		o.Log = io.Discard
 	}
-	// List errors are not interpreted as a missing VM: avoid accidental provisioning.
-	list := exec.CommandContext(ctx, "limactl", "list", "--format", "{{.Name}}")
-	names, err := list.Output()
+	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "control", o.CPUs, o.MemoryGiB, o.DiskGiB, o.Port, o.Log, NodeOptions{Source: o.Source, AgentBinary: o.HelperBinary})
 	if err != nil {
-		return Config{}, fmt.Errorf("list Lima VMs: %w", err)
+		return Config{}, err
 	}
-	exists := false
-	for _, name := range strings.Fields(string(names)) {
-		if name == o.Name {
-			exists = true
+	defer func() {
+		if err := finishOwnership(); err != nil && resultErr == nil {
+			resultErr = err
 		}
-	}
-	args := []string{"start", "--tty=false"}
-	if exists {
-		args = append(args, o.Name)
-	} else {
-		args = append(args, "--name", o.Name, "--cpus", fmt.Sprint(o.CPUs), "--memory", fmt.Sprint(o.MemoryGiB), "--disk", fmt.Sprint(o.DiskGiB), "--containerd", "none", "template:ubuntu")
-	}
-	cmd := exec.CommandContext(ctx, "limactl", args...)
-	cmd.Stdout = o.Log
-	cmd.Stderr = o.Log
-	if err := cmd.Run(); err != nil {
-		return Config{}, fmt.Errorf("start control VM: %w", err)
-	}
+	}()
 	install := `set -euo pipefail
 if ! command -v k3s >/dev/null; then
  sudo apt-get update
@@ -245,7 +229,11 @@ kubectl -n monitoring rollout status deployment/grafana --timeout=300s
 	if err != nil {
 		return Config{}, err
 	}
-	c := Config{VM: o.Name, ControllerURL: fmt.Sprintf("http://127.0.0.1:%d", o.Port), AdminToken: admin, AgentToken: agent}
+	ownerID, err := ownershipID(ctx, o.Name)
+	if err != nil {
+		return Config{}, err
+	}
+	c := Config{VM: o.Name, OwnerID: ownerID, ControllerURL: fmt.Sprintf("http://127.0.0.1:%d", o.Port), AdminToken: admin, AgentToken: agent}
 	if err = Forward(ctx, c.VM, "benchmark-system", "modelgauge-controller", o.Port, 8080, "/healthz"); err != nil {
 		return Config{}, err
 	}
@@ -257,7 +245,16 @@ kubectl -n monitoring rollout status deployment/grafana --timeout=300s
 
 // Forward holds a guest localhost port-forward independently of this CLI.
 // Lima's host agent forwards that guest port to the host loopback interface.
-func Forward(ctx context.Context, name, namespace, service string, local, remote int, health string) error {
+func Forward(ctx context.Context, name, namespace, service string, local, remote int, health string) (resultErr error) {
+	finishOwnership, err := reserveForward(ctx, name, local)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if err := finishOwnership(); err != nil && resultErr == nil {
+			resultErr = err
+		}
+	}()
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", local, health)
 	client := &http.Client{Timeout: time.Second}
 	healthy := func() bool {

@@ -29,7 +29,7 @@ type NodeOptions struct {
 	Log                                 io.Writer
 }
 
-func BootstrapNode(ctx context.Context, c Config, o NodeOptions) error {
+func BootstrapNode(ctx context.Context, c Config, o NodeOptions) (resultErr error) {
 	if o.Log == nil {
 		o.Log = io.Discard
 	}
@@ -69,28 +69,15 @@ func BootstrapNode(ctx context.Context, c Config, o NodeOptions) error {
 		endpoint.Host = "host.lima.internal:" + endpoint.Port()
 		guestURL = endpoint.String()
 	}
-	names, err := exec.CommandContext(ctx, "limactl", "list", "--format", "{{.Name}}").Output()
+	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "benchmark", o.CPUs, o.MemoryGiB, o.DiskGiB, 0, o.Log, o)
 	if err != nil {
 		return err
 	}
-	exists := false
-	for _, name := range strings.Fields(string(names)) {
-		if name == o.Name {
-			exists = true
+	defer func() {
+		if err := finishOwnership(); err != nil && resultErr == nil {
+			resultErr = err
 		}
-	}
-	args := []string{"start", "--tty=false"}
-	if exists {
-		args = append(args, o.Name)
-	} else {
-		args = append(args, "--name", o.Name, "--cpus", fmt.Sprint(o.CPUs), "--memory", fmt.Sprint(o.MemoryGiB), "--disk", fmt.Sprint(o.DiskGiB), "--containerd", "none", "template:ubuntu")
-	}
-	cmd := exec.CommandContext(ctx, "limactl", args...)
-	cmd.Stdout = o.Log
-	cmd.Stderr = o.Log
-	if err = cmd.Run(); err != nil {
-		return err
-	}
+	}()
 	preflight := `set -euo pipefail
 if command -v k3s >/dev/null; then echo 'Refusing a benchmark VM with k3s installed'; exit 1; fi
 if pgrep -x llama-bench >/dev/null; then echo 'A benchmark is active; retry after it completes'; exit 1; fi
@@ -153,7 +140,7 @@ mkdir -p "$HOME/.local/bin" "$HOME/.local/share/modelgauge/models"
 	default:
 		return fmt.Errorf("unsupported node architecture %s", arch)
 	}
-	binary, err := nodeBinary(ctx, o, arch)
+	binary, err := managedBinary(ctx, o.Name, arch)
 	if err != nil {
 		return err
 	}

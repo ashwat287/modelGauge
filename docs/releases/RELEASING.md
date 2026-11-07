@@ -1,11 +1,15 @@
 # 📦 Releases and installation
 
-[📚 Documentation home](../README.md)
+[📚 Documentation home](../../README.md)
 
 
-The release pipeline is implemented, but this working tree has not been published.
-The examples below require an actual published version in your chosen repository.
-No public download URL is claimed to exist yet.
+[ModelGauge v0.1.0](https://github.com/ashwat287/modelGauge/releases/tag/v0.1.0)
+is published from commit `6e5d6d72f545ec90f55e244749b5ce9196f06092`.
+The [release workflow](https://github.com/ashwat287/modelGauge/actions/runs/42376235440)
+passed, including PostgreSQL tests and anonymous GHCR image access. The
+[public-release smoke test](RELEASE-VALIDATION.md) also passed on fresh
+ARM64 Lima VMs, including model download, benchmark, results and Grafana metrics. All four
+public binary downloads and the release manifest passed their SHA-256 checks.
 
 ## 📋 What ships
 
@@ -22,14 +26,93 @@ Checksums detect corruption; artifact signing and provenance verification remain
 future work. Existing explicit `--source`, `--image`, and `--agent-binary`
 overrides remain available for development and troubleshooting.
 
+## 🧰 Prerequisites
+
+### 💻 Host requirements for a published binary
+
+| Requirement | What you need |
+|---|---|
+| Supported CLI platform | macOS or Linux on ARM64 or AMD64; download the matching executable |
+| Lima | A working `limactl` installation with virtualization configured for its selected VM driver |
+| Download tools | `curl` and either `shasum` or `sha256sum` |
+| Shell | A normal Unix shell and standard utilities such as `awk`, `wc`, `tr`, `chmod` and `mv` |
+| Network access | Host and guests must reach GitHub, GHCR, Ubuntu images/package mirrors, container registries and the chosen model publisher; the built-in catalog uses Hugging Face |
+| Guest permissions | The bootstrap user needs `sudo` inside the Linux guests; the default Lima Ubuntu setup supplies it |
+| Available local ports | API port `18080` by default, configurable with `control bootstrap --port`; Grafana uses port `3000` |
+
+The measured runtime is Linux. A Mac runs the CLI and hosts Linux guests through
+Lima; benchmarks do not run directly on macOS. Keep the host and control VM
+running while the local benchmark agent uses the forwarded API.
+
+### 💾 CPU, memory and disk budget
+
+The automated setup creates two separate VMs:
+
+| VM | Default vCPUs | Default RAM | Default disk | Successful release smoke-test allocation |
+|---|---:|---:|---:|---|
+| Control plane | 4 | 6 GiB | 50 GiB | 2 vCPUs, 3 GiB RAM, 20 GiB disk |
+| Benchmark node | 2 | 3 GiB | 30 GiB | 2 vCPUs, 3 GiB RAM, 20 GiB disk |
+
+The default pair allocates **9 GiB RAM**, plus the host OS and other applications.
+The smaller tested pair allocates **6 GiB RAM**; it is evidence for a small-model
+smoke test, not a universal minimum for every model or workload. Leave host RAM
+headroom and disk space for Linux packages, C++ builds, GGUF files and results.
+VM disk sizes are configured capacities; actual host usage grows with data.
+
+Use `--cpus`, `--memory` and `--disk` when creating a VM to choose its allocation.
+These flags do not resize an existing VM. For an 8 GiB laptop, place control
+services on the stronger machine and budget the measured environment separately;
+cross-host Linux-agent enrollment is currently a
+[manual setup](../CONFIGURATION.md).
+See the [validated setup](RELEASE-VALIDATION.md) for the exact tested resources.
+
+### 📦 What bootstrap installs
+
+You do not need to install host Go, Docker Desktop, kubectl, PostgreSQL,
+Prometheus or Grafana to use the published CLI. Bootstrap installs k3s and
+control services in the control guest, and Git, CMake, C/C++ build tools, GNU
+time and the pinned llama.cpp runtime in the benchmark guest. Updated source
+bootstrap uses the matching Linux Go executable for ownership and raw evidence;
+Python is not required. Models are
+downloaded separately with `model install`.
+
+For an existing Linux target enrolled manually, provide systemd user-service
+support, GNU `/usr/bin/time` and a working CPU llama-bench executable yourself;
+see [agent configuration](../CONFIGURATION.md).
+
+### 🛠️ Additional requirements for source builds
+
+To clone and build the project instead of downloading a release, install
+**Git and Go 1.23 or newer** on the host. The module declares toolchain
+`go1.23.6`, which Go may download when needed. Lima is still required for the
+automated VM setup. Source bootstrap builds/imports its controller image
+without requiring Docker Desktop.
+
+### ✅ Check before installing
+
+Run these on the CLI host:
+
+```sh
+uname -s
+uname -m
+limactl --version
+limactl list
+curl --version
+command -v sha256sum || command -v shasum
+```
+
+An empty Lima instance list is fine: bootstrap creates the VMs. If Lima or the
+download/checksum commands are missing, install them before continuing. For a
+source build, also check `git --version` and `go version`.
+
 ## 🚀 Installing a published CLI
 
-Install Lima first. Select your actual repository and published tag; the following
+Install Lima first. The following uses the published repository and tag; the
 shell example supports macOS and Linux, on ARM64 and AMD64:
 
 ```sh
 set -eu
-REPOSITORY='YOUR_ACCOUNT/YOUR_REPOSITORY'
+REPOSITORY='ashwat287/modelGauge'
 VERSION='v0.1.0'
 case "$(uname -s)" in Darwin) os=darwin ;; Linux) os=linux ;; *) exit 1 ;; esac
 case "$(uname -m)" in arm64|aarch64) arch=arm64 ;; x86_64) arch=amd64 ;; *) exit 1 ;; esac
@@ -59,7 +142,7 @@ Lima and internet access. Guests need package, container-registry, and GitHub
 access; the benchmark guest compiles the pinned llama.cpp runtime with Linux
 build tools. Model acquisition is a separate command. Keep the host and control
 VM running while agents use its forwarded API. Default VM budgets are documented
-in [control bootstrap](BOOTSTRAP.md) and [node bootstrap](NODE-BOOTSTRAP.md).
+in [control bootstrap](../deployment/BOOTSTRAP.md) and [node bootstrap](../deployment/NODE-BOOTSTRAP.md).
 
 ## 📋 Publishing
 
@@ -127,6 +210,6 @@ systemd service, and `modelgauge_*` metrics. Existing installations require a
 coordinated configuration, service, and deployment migration; changing a binary's
 filename alone does not migrate them. Preserve the database and model/result
 directories when planning that migration.
-The public GitHub/GHCR workflow and production Docker build still need their
-first authenticated repository run; a local feed cannot validate registry
-permissions, public visibility or public download availability.
+The public GitHub/GHCR workflow and production Docker build subsequently passed
+for v0.1.0. Public image visibility and all executable downloads were verified
+independently of the earlier local feed.

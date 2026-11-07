@@ -24,6 +24,7 @@ different roles and are not interchangeable.
 
 | Path | Owner / purpose |
 |---|---|
+| `~/.config/modelgauge/ownership.json` | Host bootstrap/cleanup ownership registry (current source build) |
 | `~/.config/modelgauge/control.json` | Host CLI active connection |
 | `~/.config/modelgauge/control.env` | Control VM generated tokens from secret setup |
 | `~/.kube/modelgauge-config` | Control VM kubeconfig created by bootstrap |
@@ -53,6 +54,7 @@ environment file; foreground `agent run` reads the current shell environment.
 | `MODELGAUGE_NODE_NAME` | Agent | Display name; defaults to node ID |
 | `MODELGAUGE_NODE_KIND` | Agent | `physical` by default, or `virtual` |
 | `MODELGAUGE_EXECUTION_MODE` | Agent | `native-isolated` by default, or `lima-linux` |
+| `MODELGAUGE_PROMETHEUS_TOKEN` | Export | Optional bearer token for Prometheus history requests; never included in bundles |
 | `MODELGAUGE_RESULTS_DIR` | Agent | Foreground default `results`; installed service path may differ |
 | `MODELGAUGE_DATABASE_URL` | Server | Full PostgreSQL connection URL |
 | `DATABASE_HOST`, `DATABASE_PORT`, `DATABASE_NAME`, `DATABASE_USER`, `DATABASE_PASSWORD` | Server | Alternative connection components; port defaults to 5432 |

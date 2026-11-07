@@ -9,7 +9,7 @@ import (
 
 func TestHelpWorksWithoutInfrastructure(t *testing.T) {
 	for _, command := range []string{
-		"--help", "help benchmark", "help model install", "control --help",
+		"--help", "export --help", "help export", "cleanup --help", "help cleanup", "help benchmark", "help model install", "control --help",
 		"control bootstrap --help", "control status --help", "node --help",
 		"node bootstrap --help", "node status --help", "model --help",
 		"model install --help", "model install status --help", "model install cancel --help",

@@ -151,7 +151,7 @@ modelgauge monitoring open
 ```
 
 Open `http://127.0.0.1:3000` if the browser did not launch. Username is `admin`;
-retrieve the generated password using the [monitoring guide](../deploy/monitoring/README.md).
+retrieve the generated password using the [monitoring guide](operations/MONITORING.md).
 The control exporter is installed by bootstrap. A newly created benchmark VM
 needs its exporter configured separately to expose Linux CPU/RAM charts;
 benchmark result metrics come from the controller independently.
@@ -184,5 +184,8 @@ modelgauge model install cancel JOB_ID
 Use the plan IDs from campaign JSON and the real install job ID. Active work
 stops cooperatively when its lease renewal observes cancellation. Wait until
 work is terminal before stopping VMs with `limactl stop VM_NAME`. Stopping keeps
-VM disks; deleting a VM or PVC can destroy data. The CLI has no cluster teardown
-or automatic backup command. See [operations](OPERATIONS.md).
+VM disks; deleting a VM or PVC can destroy data. The updated source build provides [owned-resource cleanup](operations/CLEANUP.md)
+with `modelgauge cleanup --dry-run --delete-vms`, followed by
+`modelgauge cleanup --delete-vms` when the report matches your intent. This only
+covers installations bootstrapped with ownership tracking; v0.1.0 has no cleanup
+command. There is no automatic backup command. See [operations](OPERATIONS.md).

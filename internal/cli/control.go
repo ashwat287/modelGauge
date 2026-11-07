@@ -55,6 +55,7 @@ func runControl(args []string, out, stderr io.Writer) int {
 	name := f.String("name", defaultName, "Lima VM name (default: active control VM, or modelgauge-control)")
 	image := f.String("image", "", "published controller image")
 	source := f.String("source", "", "build a controller image from this Go repository")
+	helper := f.String("helper-binary", "", "matching Linux executable for Go guest helpers (development --image without source)")
 	version := f.String("k3s-version", "v1.37.1+k3s1", "k3s version for new installs")
 	cpus := f.Int("cpus", 4, "VM CPUs")
 	memory := f.Int("memory", 6, "VM memory GiB")
@@ -87,7 +88,7 @@ func runControl(args []string, out, stderr io.Writer) int {
 			return 2
 		}
 	}
-	c, err := control.Bootstrap(ctx, control.Options{Name: *name, Image: *image, Source: *source, K3sVersion: *version, CPUs: *cpus, MemoryGiB: *memory, DiskGiB: *disk, Port: *port, BenchmarkTarget: *benchmark, Log: out})
+	c, err := control.Bootstrap(ctx, control.Options{Name: *name, Image: *image, Source: *source, HelperBinary: *helper, K3sVersion: *version, CPUs: *cpus, MemoryGiB: *memory, DiskGiB: *disk, Port: *port, BenchmarkTarget: *benchmark, Log: out})
 	if err != nil {
 		fmt.Fprintf(stderr, "bootstrap: %v\n", err)
 		return 1

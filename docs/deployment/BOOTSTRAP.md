@@ -1,6 +1,6 @@
 # 🏗️ Control plane bootstrap
 
-[📚 Documentation home](../README.md)
+[📚 Documentation home](../../README.md)
 
 
 Prerequisite: Lima must already be installed on the host. Run from the repository
@@ -33,8 +33,8 @@ bin/modelgauge control bootstrap --provider lima \
 
 Versioned release binaries resolve their matching controller image automatically
 from release metadata, pinned by digest. They work outside a checkout without
-host Go or Docker. See [release packaging](RELEASING.md); no public release has
-been published from this working tree yet.
+host Go or Docker. [v0.1.0 is published](https://github.com/ashwat287/modelGauge/releases/tag/v0.1.0);
+see [release installation](../releases/RELEASING.md) for the download and checksum commands.
 
 For development outside a Go checkout, use `--source /path/to/repo` (requires Go)
 or `--image REGISTRY/CONTROLLER:VERSION` for an explicitly selected container.
@@ -84,3 +84,15 @@ not proof that the renamed VM/service names have been deployed.
   port 18081. A startup registration race was fixed with a bounded node wait.
 - Restored the original active connection after validation. The separate
   validation VM is retained in stopped state for inspection.
+
+## 🧹 Ownership and cleanup (current source build)
+
+Updated bootstrap records VM creation/reuse and reserves managed guest paths
+before installation. It refuses untracked directories and untracked k3s control
+installations rather than guessing ownership. Ownership and evidence helpers run
+inside the same Linux Go executable as the agent; Python is not required.
+Bootstrap transfers the executable before preparing managed guest paths.
+For a development CLI using `--image` outside a source checkout, also pass
+`--helper-binary /path/to/matching-linux-modelgauge`. Release CLIs fetch the
+matching Linux executable automatically.
+See [cleanup](../operations/CLEANUP.md) for preview, VM deletion and legacy limits.

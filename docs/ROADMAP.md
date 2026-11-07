@@ -15,22 +15,28 @@ not a promise of dates or support for unimplemented commands.
 - Lima control and measured-node bootstrap; pinned Linux runtime builds.
 - Prometheus/Grafana manifests and dashboards; optional Linux exporters.
 - Cross-platform binary packaging and a matching image/manifest release workflow.
+- Current source: checksummed JSON/CSV result/metric exports, optional raw evidence and Prometheus query history.
+- Current source: ownership-tracked Lima bootstrap and scoped cleanup with dry-run/created-VM deletion.
 
-## 🚢 Next: first public release
+## 🚢 v0.1.0 published
 
-1. Review/commit the repository and connect the chosen GitHub remote.
-2. Run CI, create a version tag and publish matching executable/image artifacts.
-3. Ensure the GHCR package is public and assets are downloadable anonymously.
-4. Test a downloaded CLI from an empty directory with freshly created Lima VMs.
-5. Validate install → inventory → multi-model benchmark → results → Grafana.
-6. Migrate the earlier development installation separately, preserving its evidence.
+The [first public release](https://github.com/ashwat287/modelGauge/releases/tag/v0.1.0)
+is available. CI/release tests passed, the multi-architecture controller is
+public, and all four executable downloads passed checksum verification.
+
+The [v0.1.0 downloaded-CLI smoke test](releases/RELEASE-VALIDATION.md) passed on fresh
+ARM64 Lima VMs with a real model download and two-case benchmark.
+
+Repeat a downloaded-CLI smoke test for each release with fresh VMs and a real
+install → inventory → benchmark → results → Grafana workflow. Keep the earlier
+development installation migration separate and preserve its evidence.
 
 ## 📏 Better measurement evidence
 
 - Controlled thermal/steady-state qualification and richer environment capture.
 - Populated-context generation and combined prefill/decode workloads.
 - Memory measurements across explicit workload shapes, repeated RSS samples and stronger fit validity rules.
-- Exportable evidence bundles and stronger reproducibility/comparability checks.
+- Broader remote artifact transport, restorable backups and stronger reproducibility/comparability checks.
 - Independent quality evaluation for quantization/model trade-offs.
 
 ## 🔐 Production and scale

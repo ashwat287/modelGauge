@@ -1,6 +1,6 @@
 # 🧪 Benchmark design and interpretation
 
-[Documentation home](../README.md) · [CLI reference](CLI.md) · [Recovery](../deploy/JOB-RECOVERY.md)
+[Documentation home](../README.md) · [CLI reference](CLI.md) · [Recovery](operations/JOB-RECOVERY.md)
 
 ## 🎯 Choose the question first
 

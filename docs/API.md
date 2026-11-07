@@ -33,6 +33,7 @@ Metrics use Prometheus text format; normal API bodies are JSON.
 | `POST` | `/v1/plans` | Queue a `benchmark-plan/v1` document |
 | `GET` | `/v1/plans/{planID}` | Plan state/specification |
 | `POST` | `/v1/plans/{planID}/cancel` | Cancel a benchmark |
+| `GET` | `/v1/nodes/{nodeID}/export` | Authenticated repeatable-read database snapshot for export (current source) |
 | `GET` | `/v1/nodes/{nodeID}/results` | Normalized terminal results |
 | `GET` | `/v1/nodes/{nodeID}/recommendation` | Query parameters: `model`, `execution_mode`, `context`, `memory_budget_bytes` |
 
@@ -71,7 +72,7 @@ Let the shipped agent drive this protocol. Claims carry lease tokens and expiry;
 renewal/completion must use the owning token and matching node/job/run. A stale
 agent must not retry by pretending it owns a new lease. Completion replay is safe
 for the same owner/terminal result; arbitrary submissions are not equivalent to
-that recovery guarantee. See [recovery](../deploy/JOB-RECOVERY.md).
+that recovery guarantee. See [recovery](operations/JOB-RECOVERY.md).
 
 ## 💾 Schemas and evidence
 

@@ -1,6 +1,6 @@
 # 📈 Prometheus and Grafana
 
-[📚 Documentation home](../../README.md) · [Architecture](../../docs/ARCHITECTURE.md) · [Operations](../../docs/OPERATIONS.md)
+[📚 Documentation home](../../README.md) · [Architecture](../ARCHITECTURE.md) · [Operations](../OPERATIONS.md)
 
 ## 🧩 What is monitored
 

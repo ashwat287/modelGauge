@@ -13,14 +13,17 @@ Lima provides separate Linux control and benchmark VMs for local use.
 |---|---|
 | Run my first model experiment | [Getting started](docs/GETTING-STARTED.md) |
 | Understand what runs where | [Architecture](docs/ARCHITECTURE.md) |
+| Deploy control and benchmark VMs | [Control bootstrap](docs/deployment/BOOTSTRAP.md) · [Node bootstrap](docs/deployment/NODE-BOOTSTRAP.md) |
 | Look up commands and examples | [CLI reference](docs/CLI.md) |
 | Design a repeatable comparison | [Benchmark methodology](docs/BENCHMARKING.md) |
 | Configure tokens, paths and services | [Configuration](docs/CONFIGURATION.md) |
+| Export metrics and experiment evidence | [Export guide](docs/operations/EXPORT.md) |
+| Remove only owned experiment resources | [Cleanup](docs/operations/CLEANUP.md) |
 | Diagnose failures or preserve data | [Operations](docs/OPERATIONS.md) |
 | Integrate with the controller | [HTTP API](docs/API.md) |
 | Develop or test the project | [Contributing](CONTRIBUTING.md) |
 | See remaining work | [Roadmap](docs/ROADMAP.md) |
-| Package or publish binaries | [Release guide](deploy/RELEASING.md) |
+| Package or publish binaries | [Release guide](docs/releases/RELEASING.md) |
 
 ## ✅ What works today
 
@@ -31,11 +34,18 @@ Lima provides separate Linux control and benchmark VMs for local use.
 - Measure prompt processing, generation throughput and peak resident memory; retain raw evidence on the node.
 - Query results and deterministic, evidence-linked thread/memory recommendations.
 - Recover interrupted work using leases, checkpoints and a durable agent journal; cancel queued or active jobs.
+- Current source builds export results as JSON/CSV, current metrics, optional Prometheus history and verified raw evidence.
+- Current source builds track bootstrap ownership and support scoped cleanup/dry runs; this is not included in v0.1.0.
 - Build macOS/Linux ARM64/AMD64 release artifacts and matching digest-pinned controller metadata.
 
-**Delivery status:** a release workflow exists, but the first public release has
-not been published or validated end to end. Start from source below. The renamed
-deployment has not been migrated onto the previously running development VMs.
+**Latest release:** [v0.1.0](https://github.com/ashwat287/modelGauge/releases/tag/v0.1.0).
+The release includes macOS/Linux ARM64/AMD64 executables, checksums, and a public
+multi-architecture controller image pinned by digest. See the
+[installation guide](docs/releases/RELEASING.md) to use a downloaded CLI without Go or
+Docker Desktop on the host. Source development remains documented below.
+The downloaded CLI passed a [fresh-VM release validation](docs/releases/RELEASE-VALIDATION.md),
+including model installation, execution, results, recommendation and Grafana data.
+The earlier development VMs have not been migrated automatically.
 
 ## 🚀 Quick start from source
 
@@ -154,6 +164,9 @@ deploy/                 embedded k3s, monitoring and dashboard assets
 tools/release/          cross-platform binaries and release manifests
 fixtures/               historical raw Linux experiment evidence
 docs/                   usage, architecture and operator guides
+  deployment/           control/node bootstrap and manual k3s deployment
+  operations/           monitoring and job recovery
+  releases/             publishing and validation records
 ```
 
 ## ⚠️ Current boundaries

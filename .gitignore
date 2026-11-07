@@ -27,3 +27,6 @@ __pycache__/
 bin/
 coverage.out
 dist/
+
+# Local experiment export bundles
+/exports/

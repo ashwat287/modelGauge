@@ -1,6 +1,6 @@
 # 🔄 Job recovery and cancellation
 
-[📚 Documentation home](../README.md)
+[📚 Documentation home](../../README.md)
 
 
 ```sh

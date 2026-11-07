@@ -1,6 +1,6 @@
 # 🛠️ Contributing and development
 
-[Documentation home](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Release guide](deploy/RELEASING.md)
+[Documentation home](README.md) · [Architecture](docs/ARCHITECTURE.md) · [Release guide](docs/releases/RELEASING.md)
 
 ## 🧰 Local setup
 
@@ -64,5 +64,6 @@ the tag workflow, not by ordinary test/build commands.
 
 Verify the documented quick start, CLI help/JSON output, all four binary targets,
 checksums, digest-pinned image, anonymous GHCR access and a fresh user workflow.
-The existing release pipeline is not proof of a public installation until its
-first authenticated run and public-download smoke test succeed.
+The v0.1.0 public workflow, image access and all binary download checks passed.
+Repeat the fresh-user smoke test for future releases; a successful build alone
+does not validate installation or model execution on every target platform.

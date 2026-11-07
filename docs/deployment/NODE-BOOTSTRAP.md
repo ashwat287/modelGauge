@@ -1,6 +1,6 @@
 # 🖥️ Benchmark node bootstrap
 
-[📚 Documentation home](../README.md)
+[📚 Documentation home](../../README.md)
 
 
 After control-plane bootstrap, run from the Go checkout:
@@ -77,3 +77,11 @@ using the managed runtime with a 32-token prompt, 128-token generation, and
 memory workload at 2 threads. Two throughput cases and peak RSS were persisted
 to PostgreSQL and read through `results show`. The node returned online.
 This is a workflow check rather than a sustained-performance baseline.
+
+## 🧹 Ownership and cleanup (current source build)
+
+Updated Lima bootstrap records managed directories/files and the guest identity.
+A reused VM is never eligible for VM deletion. The transferred Linux Go
+executable handles ownership and raw evidence without a Python runtime. Use the [cleanup guide](../operations/CLEANUP.md)
+when experiments and pending uploads are finished. Manual/legacy agent installs
+are not automatically enrolled into this ownership registry.

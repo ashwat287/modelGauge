@@ -1,6 +1,6 @@
 # 🛠️ Operations and troubleshooting
 
-[Documentation home](../README.md) · [Configuration](CONFIGURATION.md) · [Recovery](../deploy/JOB-RECOVERY.md)
+[Documentation home](../README.md) · [Configuration](CONFIGURATION.md) · [Recovery](operations/JOB-RECOVERY.md)
 
 ## 🩺 Start with read-only checks
 
@@ -60,7 +60,7 @@ wrapper or deleting a lock/journal to make a node appear idle.
 | No stable recommendation | Check raw sample drift, exact prompt context and execution mode. The newest eligible run may be unstable. |
 | Huge elapsed time / near-zero tokens/s | Check sleep/suspension, swap, host load and thermal conditions; preserve then rerun the experiment. |
 | Pending PVC or pod | Inspect `kubectl describe`, local-path provisioner, disk space and image-pull/network events. |
-| Image pull fails | Verify actual image reference/public access; no public default release is available yet. Source bootstrap imports its image. |
+| Image pull fails | Verify the actual reference and registry access. Release CLIs resolve a public digest-pinned image; the development `:dev` placeholder is not a published release. Source bootstrap imports its image. |
 | Grafana has no Linux benchmark charts | Install/register that target's exporter; result metrics and Linux metrics have different sources. |
 | Agent lock refused | Another same-user agent owns it. Inspect services/processes; do not start a second agent under another name. |
 
@@ -86,12 +86,18 @@ returned cancellation request as proof that the child stopped immediately.
 A normal agent restart preserves its pending journal. Within a valid lease,
 completed matching cases can be reused and unfinished cases rerun. If ownership
 expired, stale completion is fenced; the journal is retained as rejected evidence.
-Read [job recovery](../deploy/JOB-RECOVERY.md) for exact semantics.
+Read [job recovery](operations/JOB-RECOVERY.md) for exact semantics.
 
 For ordinary maintenance, wait for terminal jobs and an idle node before
 restarting services or reapplying control manifests. Bootstrap is retryable and
 preserves resources in an existing same-name installation; it is not a backup,
 rollback or legacy-name migration tool.
+
+## 📦 Export before cleanup
+
+Use the [export guide](operations/EXPORT.md) to save JSON/CSV results, current
+metrics, optional Prometheus history and checksum-verified raw node files.
+Verify the bundle before deleting source VMs. This is separate from a database backup.
 
 ## 💾 Back up PostgreSQL and node evidence
 
@@ -116,8 +122,11 @@ scheduled backup service is included.
 
 The local-path PVC reclaim policy is normally `Delete`. Deleting PVCs, the k3s
 VM, or its storage can remove the only database copy. Stopping a VM retains its
-disk. There is no ModelGauge destructive cleanup command; this guide deliberately
-does not present deletion as a troubleshooting shortcut.
+disk. The updated source build supports [ownership-verified cleanup](operations/CLEANUP.md).
+Use `modelgauge cleanup --dry-run --delete-vms` to preview and
+`modelgauge cleanup --delete-vms` to remove only its tracked created VMs.
+Legacy installations are preserved. This is an end-of-experiment operation,
+not a troubleshooting shortcut or backup.
 
 ## 📦 Release and deployment changes
 

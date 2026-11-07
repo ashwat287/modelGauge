@@ -52,7 +52,7 @@ func showRequestedHelp(args []string, out io.Writer) (bool, int) {
 		printUsage(out)
 		return true, 0
 	}
-	if strings.Join(path, " ") == "model install" && args[0] != "help" {
+	if (strings.Join(path, " ") == "model install" || strings.Join(path, " ") == "cleanup" || strings.Join(path, " ") == "export") && args[0] != "help" {
 		return false, 0 // Render the install flag set, including its defaults.
 	}
 	text, ok := commandHelp[strings.Join(path, " ")]
@@ -68,20 +68,40 @@ func showRequestedHelp(args []string, out io.Writer) (bool, int) {
 }
 
 var commandHelp = map[string]string{
+	"export": `📦 Export results and metrics before cleanup
+  modelgauge export --node benchmark-node --output exports/experiment
+  modelgauge export --node benchmark-node --output exports/with-raw --include-raw
+  modelgauge export --node benchmark-node --output exports/history \
+    --prometheus-url http://127.0.0.1:9090 \
+    --start 2026-11-07T10:00:00Z --end 2026-11-07T11:00:00Z
+Exports JSON/CSV results, metadata, current controller metrics, manifest and checksums.
+Raw files and Prometheus history are optional; missing requested data fails explicitly.
+Use a new output directory and verify SHA256SUMS before cleanup.
+See docs/operations/EXPORT.md. Use 'export --help' for all flags.`,
+	"cleanup": `🧹 Cleanup — remove only resources with verified ModelGauge ownership
+  modelgauge cleanup --dry-run --delete-vms
+  modelgauge cleanup
+  modelgauge cleanup --delete-vms
+Default cleanup removes tracked guest directories/files and owned user services;
+VMs are kept. --delete-vms also removes only VMs ModelGauge originally created,
+including everything subsequently added to those VM disks. Reused VMs stay.
+Unknown legacy installs are never adopted. Pending/active work blocks cleanup.
+Stopped VMs are not started by a dry run; actual cleanup starts them to verify.
+See docs/operations/CLEANUP.md. Use 'cleanup --help' for flags.`,
 	"model install status": "📦 modelgauge model install status JOB_ID\nQueries one installation job as JSON. Use the returned job_id, not a model ID.\nOptional connection flags: --controller URL and --admin-token TOKEN.",
 	"control": `🏗️ Control plane — k3s, PostgreSQL, controller, Prometheus, Grafana
   modelgauge control bootstrap --provider lima [--source REPO | --image IMAGE]
   modelgauge control status
 Development: pass --source . from the repository. Released builds resolve their image.
 Defaults for a new VM: 4 CPUs, 6 GiB RAM, 50 GiB disk; API localhost:18080.
-See deploy/BOOTSTRAP.md. Use 'control bootstrap --help' for all flags.`,
+See docs/deployment/BOOTSTRAP.md. Use 'control bootstrap --help' for all flags.`,
 	"node": `🖥️ Nodes — a measured node runs the benchmark, separately from k3s
   modelgauge node bootstrap --provider lima --name benchmark-node [--source REPO]
   modelgauge node list
   modelgauge node status benchmark-node
   modelgauge node inspect
 Bootstrap defaults: 2 CPUs, 3 GiB RAM, 30 GiB disk. Inspection requires Linux.
-See deploy/NODE-BOOTSTRAP.md. Node list/status return JSON.`,
+See docs/deployment/NODE-BOOTSTRAP.md. Node list/status return JSON.`,
 	"model": `📦 Models — managed GGUF downloads and installed inventory
   modelgauge model search qwen2.5
   modelgauge model install qwen2.5-1.5b-instruct:q4_k_m --node benchmark-node
@@ -130,7 +150,7 @@ Run creation where the model file is readable; paths in the plan must be valid o
     --execution-mode lima-linux --context 512 --memory-budget-gib 2
 Both commands return JSON. Recommendations require completed stable measurements
 for the requested context. A memory budget is usable workload RAM, not host total RAM.`,
-	"monitoring":      "📈 Monitoring\n  modelgauge monitoring open\nForwards Grafana to localhost:3000 and opens the ModelGauge overview.\nUsername: admin. Read the generated password using deploy/monitoring/README.md.",
+	"monitoring":      "📈 Monitoring\n  modelgauge monitoring open\nForwards Grafana to localhost:3000 and opens the ModelGauge overview.\nUsername: admin. Read the generated password using docs/operations/MONITORING.md.",
 	"monitoring open": "📈 modelgauge monitoring open\nUses the saved control connection to forward Grafana and open its overview dashboard.",
 	"agent": `⚙️ Linux agent — install and supervise on the measured node
   modelgauge agent install --controller URL --node NODE_ID --execution-mode native-isolated
