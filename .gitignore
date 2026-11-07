@@ -1,0 +1,29 @@
+# Secrets and local agent identity
+.env
+*.env
+config.env
+inbox/
+*.token
+*.key
+*.pem
+.kube/
+deploy/k3s/secrets.local.yaml
+
+# Model files and local runtime/build artifacts
+models/
+*.gguf
+benchmark-work/src/
+benchmark-work/build/
+build/
+
+# Python and editor artifacts
+__pycache__/
+*.py[cod]
+.venv/
+.vscode/
+.DS_Store
+
+# Go artifacts
+bin/
+coverage.out
+dist/

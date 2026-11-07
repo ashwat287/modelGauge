@@ -1,0 +1,11 @@
+# Release images contain the exact Linux binary published in the same release.
+FROM gcr.io/distroless/static-debian12:nonroot
+ARG TARGETARCH
+ARG REPOSITORY
+ARG VERSION
+ARG COMMIT
+LABEL org.opencontainers.image.source="https://github.com/${REPOSITORY}"
+LABEL org.opencontainers.image.version="${VERSION}"
+LABEL org.opencontainers.image.revision="${COMMIT}"
+COPY --chmod=755 dist/modelgauge_linux_${TARGETARCH} /usr/local/bin/modelgauge
+ENTRYPOINT ["/usr/local/bin/modelgauge"]

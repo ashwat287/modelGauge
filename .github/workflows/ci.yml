@@ -1,0 +1,28 @@
+name: CI
+on: [push, pull_request]
+permissions:
+  contents: read
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: benchmark
+          POSTGRES_USER: benchmark_app
+          POSTGRES_PASSWORD: modelgauge_ci_only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U benchmark_app -d benchmark"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: stable
+      - run: go test -race ./...
+        env:
+          MODELGAUGE_TEST_DATABASE_HOST: 127.0.0.1:5432
+          MODELGAUGE_TEST_DATABASE_PASSWORD: modelgauge_ci_only
+      - run: go vet ./...

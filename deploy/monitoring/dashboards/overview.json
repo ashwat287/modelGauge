@@ -1,0 +1,13 @@
+{
+ "uid":"modelgauge-overview","title":"ModelGauge — Infrastructure and Operations","schemaVersion":39,"version":1,"refresh":"30s","time":{"from":"now-1h","to":"now"},
+ "panels":[
+ {"id":1,"title":"Scrape health","type":"stat","gridPos":{"x":0,"y":0,"w":8,"h":5},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"up","legendFormat":"{{job}} {{instance}}"}]},
+ {"id":2,"title":"CPU usage","type":"timeseries","gridPos":{"x":8,"y":0,"w":8,"h":7},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"100 * (1 - avg by(node) (rate(node_cpu_seconds_total{mode=\"idle\"}[2m])))","legendFormat":"{{node}}"}],"fieldConfig":{"defaults":{"unit":"percent"}}},
+ {"id":3,"title":"Available RAM","type":"timeseries","gridPos":{"x":16,"y":0,"w":8,"h":7},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"node_memory_MemAvailable_bytes","legendFormat":"{{node}}"}],"fieldConfig":{"defaults":{"unit":"bytes"}}},
+ {"id":4,"title":"Disk available","type":"timeseries","gridPos":{"x":0,"y":7,"w":8,"h":7},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"node_filesystem_avail_bytes{mountpoint=\"/\"}","legendFormat":"{{node}}"}],"fieldConfig":{"defaults":{"unit":"bytes"}}},
+ {"id":5,"title":"Swap used","type":"timeseries","gridPos":{"x":8,"y":7,"w":8,"h":7},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"node_memory_SwapTotal_bytes - node_memory_SwapFree_bytes","legendFormat":"{{node}}"}],"fieldConfig":{"defaults":{"unit":"bytes"}}},
+ {"id":6,"title":"Agent heartbeat age","type":"timeseries","gridPos":{"x":16,"y":7,"w":8,"h":7},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"time() - modelgauge_agent_last_seen_seconds","legendFormat":"{{node}}"}],"fieldConfig":{"defaults":{"unit":"s"}}},
+ {"id":7,"title":"Benchmark plans","type":"timeseries","gridPos":{"x":0,"y":14,"w":12,"h":7},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"modelgauge_plans","legendFormat":"{{status}}"}]},
+ {"id":8,"title":"Model installs","type":"timeseries","gridPos":{"x":12,"y":14,"w":12,"h":7},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"modelgauge_install_jobs","legendFormat":"{{status}}"}]}
+ ]
+}

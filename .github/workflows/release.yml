@@ -1,0 +1,113 @@
+name: Release ModelGauge
+on:
+  push:
+    tags: ['v*']
+permissions:
+  contents: read
+concurrency:
+  group: release-${{ github.ref }}
+  cancel-in-progress: false
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      packages: write
+    services:
+      postgres:
+        image: postgres:17-alpine
+        env:
+          POSTGRES_DB: benchmark
+          POSTGRES_USER: benchmark_app
+          POSTGRES_PASSWORD: modelgauge_ci_only
+        ports: ['5432:5432']
+        options: >-
+          --health-cmd "pg_isready -U benchmark_app -d benchmark"
+          --health-interval 5s --health-timeout 5s --health-retries 20
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262 # v4
+        with:
+          fetch-depth: 0
+      - uses: actions/setup-go@40f1582b2485089dde7abd97c1529aa768e1baff # v5
+        with:
+          go-version: stable
+      - name: Refuse an existing published release before pushing images
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to overwrite published artifacts.' >&2
+            exit 1
+          fi
+      - name: Test, including PostgreSQL and Linux process recovery
+        env:
+          MODELGAUGE_TEST_DATABASE_HOST: 127.0.0.1:5432
+          MODELGAUGE_TEST_DATABASE_PASSWORD: modelgauge_ci_only
+        run: go test -race ./...
+      - name: Build matching CLI and agent artifacts
+        id: metadata
+        env:
+          TAG: ${{ github.ref_name }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          commit=$(git rev-parse HEAD)
+          image="ghcr.io/${REPOSITORY,,}"
+          echo "commit=$commit" >> "$GITHUB_OUTPUT"
+          echo "image=$image" >> "$GITHUB_OUTPUT"
+          go run ./tools/release --version "$TAG" --commit "$commit" --repository "$REPOSITORY"
+          dist/modelgauge_linux_amd64 version --json | jq -e \
+            --arg version "$TAG" --arg commit "$commit" --arg repository "$REPOSITORY" \
+            '.version == $version and .commit == $commit and .repository == $repository and .channel == "release"'
+      - uses: docker/setup-buildx-action@8d2750c68a42422c14e847fe6c8ac0403b4cbd6f # v3
+      - uses: docker/login-action@c94ce9fb468520275223c153574b00df6fe4bcc9 # v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish multi-architecture controller
+        id: image
+        uses: docker/build-push-action@10e90e3645eae34f1e60eeb005ba3a3d33f178e8 # v6
+        with:
+          context: .
+          file: Dockerfile.release
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.metadata.outputs.image }}:${{ github.ref_name }}
+          build-args: |
+            REPOSITORY=${{ github.repository }}
+            VERSION=${{ github.ref_name }}
+            COMMIT=${{ steps.metadata.outputs.commit }}
+      - name: Pin published digest and finalize checksums
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}@${{ steps.image.outputs.digest }}
+        run: go run ./tools/release --finalize --image "$IMAGE"
+      - name: Require anonymous access for downloaded CLI bootstrap
+        env:
+          IMAGE: ${{ steps.metadata.outputs.image }}@${{ steps.image.outputs.digest }}
+          REPOSITORY: ${{ github.repository }}
+        run: |
+          package="${REPOSITORY,,}"
+          if ! token=$(curl -fsS --retry 3 --max-time 60 "https://ghcr.io/token?service=ghcr.io&scope=repository:$package:pull" | jq -er .token); then
+            echo 'Make the GHCR package public, then rerun this workflow. Release publication is blocked to avoid an unusable bootstrap.' >&2
+            exit 1
+          fi
+          curl -fsS --retry 3 --max-time 60 -o /dev/null \
+            -H "Authorization: Bearer $token" \
+            -H 'Accept: application/vnd.oci.image.index.v1+json, application/vnd.docker.distribution.manifest.list.v2+json' \
+            "https://ghcr.io/v2/$package/manifests/${IMAGE##*@}"
+      - name: Publish GitHub Release assets
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_REPO: ${{ github.repository }}
+          TAG: ${{ github.ref_name }}
+        run: |
+          if gh release view "$TAG" >/dev/null 2>&1; then
+            echo 'Release already exists; refusing to overwrite published assets.' >&2
+            exit 1
+          fi
+          args=()
+          if [[ "$TAG" == *-* ]]; then args+=(--prerelease); fi
+          gh release create "$TAG" dist/modelgauge_* dist/release.json dist/SHA256SUMS \
+            --verify-tag --generate-notes --title "ModelGauge $TAG" "${args[@]}"

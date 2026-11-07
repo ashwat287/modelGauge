@@ -1,0 +1,10 @@
+{
+ "uid":"modelgauge-benchmarks","title":"ModelGauge — Benchmark Results","schemaVersion":39,"version":1,"refresh":"30s","time":{"from":"now-1h","to":"now"},
+ "panels":[
+ {"id":1,"title":"Latest throughput (tokens/s)","type":"timeseries","gridPos":{"x":0,"y":0,"w":12,"h":9},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"modelgauge_benchmark_tokens_per_second","legendFormat":"{{node}} {{model}} {{mode}} t{{threads}} p{{prompt}} g{{generation}}"}]},
+ {"id":2,"title":"Relative standard deviation","type":"timeseries","gridPos":{"x":12,"y":0,"w":12,"h":9},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"modelgauge_benchmark_relative_stddev","legendFormat":"{{node}} {{model}} t{{threads}} p{{prompt}} g{{generation}}"}],"fieldConfig":{"defaults":{"unit":"percentunit"}}},
+ {"id":3,"title":"Measured peak RSS by workload","type":"timeseries","gridPos":{"x":0,"y":9,"w":12,"h":9},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"modelgauge_peak_rss_bytes","legendFormat":"{{node}} {{model}} {{workload}}"}],"fieldConfig":{"defaults":{"unit":"bytes"}}},
+ {"id":4,"title":"Memory reservation (1.25 × RSS)","type":"timeseries","gridPos":{"x":12,"y":9,"w":12,"h":9},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"modelgauge_memory_reservation_bytes","legendFormat":"{{node}} {{model}} {{workload}}"}],"fieldConfig":{"defaults":{"unit":"bytes"}}},
+ {"id":5,"title":"Run states including failures","type":"timeseries","gridPos":{"x":0,"y":18,"w":24,"h":7},"datasource":{"uid":"prometheus","type":"prometheus"},"targets":[{"expr":"modelgauge_runs","legendFormat":"{{status}}"}]}
+ ]
+}

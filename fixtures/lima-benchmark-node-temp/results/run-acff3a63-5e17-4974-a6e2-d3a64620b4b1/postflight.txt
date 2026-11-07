@@ -1,0 +1,13 @@
+timestamp=2026-11-04T14:41:46Z
+--- system ---
+Linux benchmark-node-temp 6.17.0-41-generic #41-Ubuntu SMP PREEMPT_DYNAMIC Sat Jun 20 17:41:03 UTC 2026 aarch64 GNU/Linux
+--- CPU ---
+2
+--- memory ---
+               total        used        free      shared  buff/cache   available
+Mem:           2.8Gi       404Mi       885Mi       1.0Mi       1.7Gi       2.4Gi
+Swap:             0B          0B          0B
+--- swap ---
+--- disk ---
+Filesystem      Size  Used Avail Use% Mounted on
+/dev/vda1        29G  5.0G   24G  18% /

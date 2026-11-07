@@ -1,0 +1,11 @@
+.git
+.github
+fixtures
+models
+*.gguf
+bin
+**/*.env
+**/*.token
+**/*.key
+**/*.pem
+**/secrets.local.yaml
