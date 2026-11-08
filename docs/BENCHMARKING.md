@@ -2,6 +2,9 @@
 
 [Documentation home](../README.md) · [CLI reference](CLI.md) · [Recovery](operations/JOB-RECOVERY.md)
 
+The [historical benchmark report](HISTORICAL-BENCHMARKS.md) includes archived
+Linux VM measurements, limitations, and original raw evidence in Markdown.
+
 ## 🎯 Choose the question first
 
 Compare one model at multiple quantizations, compare thread counts on one node,

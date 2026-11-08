@@ -52,8 +52,10 @@ embedded manifests and dashboards together when changing deployment identifiers.
 Protocol changes need explicit schema/version consideration. Preserve ownership
 and idempotence rules in the job lifecycle. Never put run IDs or URLs in telemetry
 labels. Keep credentials, private connection files, GGUFs, build trees and generated
-release artifacts outside commits. Preserve historical fixtures as evidence; do
-not rewrite samples to make a new expectation pass.
+release artifacts outside commits. Preserve archived measurements and their
+original evidence in [the historical benchmark report](docs/HISTORICAL-BENCHMARKS.md);
+do not rewrite samples to make a new expectation pass. Keep future raw experiment
+exports outside source control and document selected results with their provenance.
 
 For a pull request, describe the user-visible change, why it is needed, what was
 tested and what remains unverified. Tests should exercise meaningful behavior,

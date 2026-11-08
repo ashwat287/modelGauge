@@ -7,7 +7,7 @@
 is published from commit `6e5d6d72f545ec90f55e244749b5ce9196f06092`.
 The [release workflow](https://github.com/ashwat287/modelGauge/actions/runs/42376235440)
 passed, including PostgreSQL tests and anonymous GHCR image access. The
-[public-release smoke test](RELEASE-VALIDATION.md) also passed on fresh
+public-release smoke test also passed on fresh
 ARM64 Lima VMs, including model download, benchmark, results and Grafana metrics. All four
 public binary downloads and the release manifest passed their SHA-256 checks.
 
@@ -64,7 +64,6 @@ These flags do not resize an existing VM. For an 8 GiB laptop, place control
 services on the stronger machine and budget the measured environment separately;
 cross-host Linux-agent enrollment is currently a
 [manual setup](../CONFIGURATION.md).
-See the [validated setup](RELEASE-VALIDATION.md) for the exact tested resources.
 
 ### 📦 What bootstrap installs
 

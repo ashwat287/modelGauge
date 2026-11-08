@@ -43,7 +43,7 @@ The release includes macOS/Linux ARM64/AMD64 executables, checksums, and a publi
 multi-architecture controller image pinned by digest. See the
 [installation guide](docs/releases/RELEASING.md) to use a downloaded CLI without Go or
 Docker Desktop on the host. Source development remains documented below.
-The downloaded CLI passed a [fresh-VM release validation](docs/releases/RELEASE-VALIDATION.md),
+The downloaded CLI passed a fresh-VM release validation,
 including model installation, execution, results, recommendation and Grafana data.
 The earlier development VMs have not been migrated automatically.
 
@@ -144,6 +144,8 @@ Warm-up is a fixed number of runs, not a thermal-equilibrium detector. Memory is
 measured for one recorded workload, not every context automatically. Prompt and
 generation tests do not measure answer quality, HTTP latency, or concurrent serving.
 Read [methodology](docs/BENCHMARKING.md) before comparing machines or runtimes.
+The [historical benchmark report](docs/HISTORICAL-BENCHMARKS.md) preserves earlier
+Linux VM measurements and their original evidence.
 
 ## 🧰 Repository map
 
@@ -162,11 +164,11 @@ internal/profile/       standard-cpu plan generation
 pkg/protocol/           versioned shared plan/result contracts
 deploy/                 embedded k3s, monitoring and dashboard assets
 tools/release/          cross-platform binaries and release manifests
-fixtures/               historical raw Linux experiment evidence
 docs/                   usage, architecture and operator guides
   deployment/           control/node bootstrap and manual k3s deployment
   operations/           monitoring and job recovery
   releases/             publishing and validation records
+  HISTORICAL-BENCHMARKS.md archived Linux measurements and source evidence
 ```
 
 ## ⚠️ Current boundaries

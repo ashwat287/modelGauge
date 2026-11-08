@@ -29,8 +29,8 @@ VM, then builds CPU-only llama-bench at upstream commit
 `eb4e244be77a906a183cd4a00fd51d9ad3200955`. Native CPU tuning, OpenMP, BLAS, CUDA
 and Vulkan are disabled for a reproducible initial CPU profile. Select another
 full commit with `--llama-revision`. This pin matches the revision used in the
-repository's earlier Linux benchmark fixtures; older measurements with different
-build flags must still be compared separately.
+[archived Linux benchmark evidence](../HISTORICAL-BENCHMARKS.md); older measurements
+with different build flags must still be compared separately.
 
 The runtime is cached by revision under ModelGauge's managed runtime directory.
 An already built revision is reused after its executable passes `--help`.

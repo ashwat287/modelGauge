@@ -24,7 +24,7 @@ The [first public release](https://github.com/ashwat287/modelGauge/releases/tag/
 is available. CI/release tests passed, the multi-architecture controller is
 public, and all four executable downloads passed checksum verification.
 
-The [v0.1.0 downloaded-CLI smoke test](releases/RELEASE-VALIDATION.md) passed on fresh
+The v0.1.0 downloaded-CLI smoke test passed on fresh
 ARM64 Lima VMs with a real model download and two-case benchmark.
 
 Repeat a downloaded-CLI smoke test for each release with fresh VMs and a real

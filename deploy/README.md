@@ -9,7 +9,6 @@ and Grafana dashboards. Deployment documentation lives under `docs/`:
 - [Prometheus and Grafana](../docs/operations/MONITORING.md)
 - [Job recovery and cancellation](../docs/operations/JOB-RECOVERY.md)
 - [Releases and installation](../docs/releases/RELEASING.md)
-- [Public release validation](../docs/releases/RELEASE-VALIDATION.md)
 - [Historical model-install validation](../docs/releases/MODEL-INSTALL-VALIDATION.md)
 
 See the [project README](../README.md) for the complete documentation index.
