@@ -63,8 +63,9 @@ The default target gets 2 vCPUs, 3 GiB memory and a 30 GiB disk. The node should
 register as `online` with `execution_mode: lima-linux`. No node directories,
 runtime paths, addresses or enrollment tokens need to be supplied in this flow.
 
-A first build can take time. If it fails, fix the reported network/package/build
-error and retry the same command. It reuses the VM and a working cached runtime.
+A first build can take time. On failure, inspect the original error and recovery
+outcome. A VM newly created by that invocation is rolled back; an existing VM is
+retained with verified checkpoints. Fix the reported error before retrying.
 A VM containing k3s is refused as a benchmark node. Bootstrap also refuses an
 active llama-bench process rather than upgrading during measurement.
 

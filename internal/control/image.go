@@ -7,9 +7,9 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"strings"
 )
@@ -33,7 +33,7 @@ func buildImage(ctx context.Context, name, source string, log io.Writer) (string
 	}
 	defer os.RemoveAll(directory)
 	binaryPath := filepath.Join(directory, "modelgauge")
-	cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", binaryPath, "./cmd/modelgauge")
+	cmd := platform.CommandContext(ctx, "go", "build", "-trimpath", "-o", binaryPath, "./cmd/modelgauge")
 	cmd.Dir = source
 	for _, value := range os.Environ() {
 		if !strings.HasPrefix(value, "GOOS=") && !strings.HasPrefix(value, "GOARCH=") && !strings.HasPrefix(value, "CGO_ENABLED=") {

@@ -9,7 +9,7 @@ import (
 )
 import "github.com/nerdylucifer/modelgauge/internal/client"
 
-func cancelJob(args []string, out, stderr io.Writer, install bool) int {
+func cancelJob(ctx context.Context, args []string, out, stderr io.Writer, install bool) int {
 	id := ""
 	if len(args) > 0 && len(args[0]) > 0 && args[0][0] != '-' {
 		id = args[0]
@@ -33,7 +33,7 @@ func cancelJob(args []string, out, stderr io.Writer, install bool) int {
 	}
 	api := &client.Client{BaseURL: *controllerURL, AdminToken: *token}
 	var response any
-	if _, err := api.DoJSON(context.Background(), "POST", path, "admin", nil, &response); err != nil {
+	if _, err := api.DoJSON(ctx, "POST", path, "admin", nil, &response); err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}

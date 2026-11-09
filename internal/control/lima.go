@@ -6,7 +6,10 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/deploy"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
 	"io/fs"
 	"net/http"
@@ -16,9 +19,6 @@ import (
 	"regexp"
 	"strings"
 	"time"
-
-	"github.com/nerdylucifer/modelgauge/deploy"
-	"github.com/nerdylucifer/modelgauge/internal/platform"
 )
 
 type Config struct {
@@ -29,6 +29,7 @@ type Config struct {
 	AgentToken    string `json:"agent_token"`
 }
 type Options struct {
+	ReadinessTimeout                                 time.Duration
 	Name, Image, Source, K3sVersion, BenchmarkTarget string
 	HelperBinary                                     string
 	CPUs, MemoryGiB, DiskGiB, Port                   int
@@ -67,18 +68,6 @@ func Save(c Config) error {
 }
 func quote(s string) string { return "'" + strings.ReplaceAll(s, "'", "'\\''") + "'" }
 
-func shell(ctx context.Context, name, script string, input io.Reader, output io.Writer) error {
-	// The caller's working directory may not exist in this guest. Pin a guest
-	// directory so Lima diagnostics cannot contaminate captured command output.
-	cmd := exec.CommandContext(ctx, "limactl", "shell", "--workdir", "/", name, "--", "bash", "-lc", script)
-	cmd.Stdin = input
-	cmd.Stdout = output
-	cmd.Stderr = output
-	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("control VM command: %w", err)
-	}
-	return nil
-}
 func capture(ctx context.Context, name, script string) (string, error) {
 	var out bytes.Buffer
 	err := shell(ctx, name, script, nil, &out)
@@ -98,15 +87,18 @@ func Bootstrap(ctx context.Context, o Options) (result Config, resultErr error) 
 	if o.Log == nil {
 		o.Log = io.Discard
 	}
+
 	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "control", o.CPUs, o.MemoryGiB, o.DiskGiB, o.Port, o.Log, NodeOptions{Source: o.Source, AgentBinary: o.HelperBinary})
 	if err != nil {
 		return Config{}, err
 	}
-	defer func() {
-		if err := finishOwnership(); err != nil && resultErr == nil {
-			resultErr = err
-		}
-	}()
+	defer completeProvision(ctx, finishOwnership, &resultErr)
+	if o.ReadinessTimeout <= 0 {
+		o.ReadinessTimeout = 10 * time.Minute
+	}
+	readiness := fmt.Sprintf("%ds", int64(o.ReadinessTimeout.Seconds()))
+
+	fmt.Fprintln(o.Log, "Installing k3s...")
 	install := `set -euo pipefail
 if ! command -v k3s >/dev/null; then
  sudo apt-get update
@@ -117,9 +109,7 @@ fi
 sudo systemctl start k3s
 mkdir -p "$HOME/.kube"
 if [ ! -f "$HOME/.kube/config" ]; then
- sudo cp /etc/rancher/k3s/k3s.yaml "$HOME/.kube/config"
- sudo chown "$(id -u):$(id -g)" "$HOME/.kube/config"
- chmod 600 "$HOME/.kube/config"
+ sudo cat /etc/rancher/k3s/k3s.yaml | "$HOME/.local/share/modelgauge/guest-helper" _guest write-file .kube/config 600
 fi
 for attempt in $(seq 1 60); do
  if sudo k3s kubectl get nodes -o name 2>/dev/null | grep -q '^node/'; then break; fi
@@ -192,10 +182,20 @@ mkdir -p "$HOME/.local/share/modelgauge/deploy"
 	if image == "" {
 		return Config{}, fmt.Errorf("provide --image with a published controller image, or --source with the Go repository")
 	}
+
 	script := `set -euo pipefail
+export MODELGAUGE_ROLLOUT_TIMEOUT=` + quote(readiness) + `
+on_failure() {
+ status=$?
+ trap - ERR
+ set +e
+ kubectl --request-timeout=10s --kubeconfig "$HOME/.kube/modelgauge-config" get pods -A >&2
+ kubectl --request-timeout=10s --kubeconfig "$HOME/.kube/modelgauge-config" get events -A --sort-by=.metadata.creationTimestamp | tail -n 30 >&2
+ exit "$status"
+}
+trap on_failure ERR
 export KUBECONFIG="$HOME/.kube/modelgauge-config"
-sudo cat /etc/rancher/k3s/k3s.yaml > "$KUBECONFIG"
-chmod 600 "$KUBECONFIG"
+sudo cat /etc/rancher/k3s/k3s.yaml | "$HOME/.local/share/modelgauge/guest-helper" _guest write-file .kube/modelgauge-config 600
 cd "$HOME/.local/share/modelgauge/deploy/k3s"
 sh create-secrets.sh
 `
@@ -203,16 +203,16 @@ sh create-secrets.sh
 	// never briefly scheduled. Preserve the existing controller Service/PVCs.
 	script += `sed ` + quote("s|ghcr.io/nerdylucifer/modelgauge:dev|"+image+"|g") + ` controller.yaml > controller-selected.yaml
 kubectl apply -f postgres.yaml
-kubectl -n benchmark-data rollout status statefulset/benchmark-postgres --timeout=300s
+kubectl -n benchmark-data rollout status statefulset/benchmark-postgres --timeout="${MODELGAUGE_ROLLOUT_TIMEOUT:-600s}"
 kubectl apply -f controller-selected.yaml
 kubectl -n benchmark-system rollout restart deployment/modelgauge-controller
-kubectl -n benchmark-system rollout status deployment/modelgauge-controller --timeout=300s
+kubectl -n benchmark-system rollout status deployment/modelgauge-controller --timeout="${MODELGAUGE_ROLLOUT_TIMEOUT:-600s}"
 cd ../monitoring
 bash deploy.sh
 kubectl -n monitoring rollout restart deployment/prometheus
 kubectl -n monitoring rollout restart deployment/grafana
-kubectl -n monitoring rollout status deployment/prometheus --timeout=300s
-kubectl -n monitoring rollout status deployment/grafana --timeout=300s
+kubectl -n monitoring rollout status deployment/prometheus --timeout="${MODELGAUGE_ROLLOUT_TIMEOUT:-600s}"
+kubectl -n monitoring rollout status deployment/grafana --timeout="${MODELGAUGE_ROLLOUT_TIMEOUT:-600s}"
 `
 	if strings.ContainsAny(image, "|\n\r&") {
 		return Config{}, fmt.Errorf("invalid image reference")
@@ -234,9 +234,11 @@ kubectl -n monitoring rollout status deployment/grafana --timeout=300s
 		return Config{}, err
 	}
 	c := Config{VM: o.Name, OwnerID: ownerID, ControllerURL: fmt.Sprintf("http://127.0.0.1:%d", o.Port), AdminToken: admin, AgentToken: agent}
+
 	if err = Forward(ctx, c.VM, "benchmark-system", "modelgauge-controller", o.Port, 8080, "/healthz"); err != nil {
 		return Config{}, err
 	}
+
 	if err = Save(c); err != nil {
 		return Config{}, err
 	}
@@ -251,9 +253,50 @@ func Forward(ctx context.Context, name, namespace, service string, local, remote
 		return err
 	}
 	defer func() {
-		if err := finishOwnership(); err != nil && resultErr == nil {
-			resultErr = err
+		resultErr = errors.Join(resultErr, finishOwnership())
+	}()
+	previous, err := capture(ctx, name, `if [ -f "$HOME/.config/systemd/user/modelgauge-forward-`+fmt.Sprint(local)+`.service" ]; then cat "$HOME/.config/systemd/user/modelgauge-forward-`+fmt.Sprint(local)+`.service"; fi`)
+	if err != nil {
+		return err
+	}
+	previousActive, err := capture(ctx, name, `if systemctl --user is-active --quiet modelgauge-forward-`+fmt.Sprint(local)+`; then printf active; else printf inactive; fi`)
+	if err != nil {
+		return err
+	}
+	previousEnabled, err := capture(ctx, name, `if systemctl --user is-enabled --quiet modelgauge-forward-`+fmt.Sprint(local)+`; then printf enabled; else printf disabled; fi`)
+	if err != nil {
+		return err
+	}
+	defer func() {
+		if resultErr == nil {
+			return
 		}
+		recovery, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		defer cancel()
+		unit := "modelgauge-forward-" + fmt.Sprint(local)
+		restore := `set -euo pipefail
+unit=` + quote(unit) + `
+state=$(systemctl --user show "$unit" -p LoadState --value 2>/dev/null || true)
+if [ "$state" = loaded ]; then systemctl --user stop "$unit"; fi
+`
+		if previous != "" {
+			restore += `printf '%s\n' ` + quote(previous) + ` | "$HOME/.local/share/modelgauge/guest-helper" _guest write-file ".config/systemd/user/$unit.service" 600
+systemctl --user daemon-reload
+`
+			if previousEnabled == "enabled" {
+				restore += `systemctl --user enable "$unit"` + "\n"
+			} else {
+				restore += `systemctl --user disable "$unit"` + "\n"
+			}
+			if previousActive == "active" {
+				restore += `systemctl --user start "$unit"` + "\n"
+			}
+		} else {
+			restore += `if [ -f "$HOME/.config/systemd/user/$unit.service" ]; then systemctl --user disable "$unit"; "$HOME/.local/share/modelgauge/guest-helper" _guest remove-file ".config/systemd/user/$unit.service"; fi
+systemctl --user daemon-reload
+`
+		}
+		resultErr = errors.Join(resultErr, rawShell(recovery, name, restore, nil, io.Discard))
 	}()
 	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", local, health)
 	client := &http.Client{Timeout: time.Second}
@@ -270,15 +313,8 @@ func Forward(ctx context.Context, name, namespace, service string, local, remote
 	script := `set -euo pipefail
 mkdir -p "$HOME/.config/systemd/user"
 unit=` + quote(unit) + `
-if [ ! -f "$HOME/.config/systemd/user/$unit.service" ]; then
- if [ -f /tmp/modelgauge-forward-` + fmt.Sprint(local) + `.log ] || [ ` + fmt.Sprint(local) + ` = 3000 -a -f /tmp/modelgauge-grafana-forward.log ]; then
-  for pid in $(ss -ltnp 'sport = :` + fmt.Sprint(local) + `' | sed -n 's/.*pid=\([0-9][0-9]*\).*/\1/p' | sort -u); do
-   if [ "$(cat /proc/$pid/comm 2>/dev/null || true)" = kubectl ]; then kill "$pid"; fi
-  done
- fi
-fi
 kubectl_path=$(command -v kubectl)
-cat > "$HOME/.config/systemd/user/$unit.service" <<EOF
+"$HOME/.local/share/modelgauge/guest-helper" _guest write-file ".config/systemd/user/$unit.service" 600 <<EOF
 [Unit]
 Description=ModelGauge local service forward
 [Service]
@@ -289,7 +325,6 @@ RestartSec=2
 [Install]
 WantedBy=default.target
 EOF
-chmod 600 "$HOME/.config/systemd/user/$unit.service"
 sudo loginctl enable-linger "$(id -un)"
 systemctl --user daemon-reload
 systemctl --user enable --now "$unit"
@@ -313,4 +348,81 @@ systemctl --user is-active --quiet "$unit"
 
 func Status(ctx context.Context, c Config, out io.Writer) error {
 	return shell(ctx, c.VM, `export KUBECONFIG="$HOME/.kube/modelgauge-config"; kubectl get nodes; kubectl -n benchmark-system get deploy; kubectl -n benchmark-data get statefulset,pvc; kubectl -n monitoring get deploy,pvc`, nil, out)
+}
+
+// A systemd scope supervises guest descendants even if the local SSH client dies.
+func shell(ctx context.Context, name, script string, input io.Reader, output io.Writer) (err error) {
+	session, _ := ctx.Value(bootstrapKey{}).(*bootstrapSession)
+	if session == nil {
+		return rawShell(ctx, name, script, input, output)
+	}
+	id, e := newScopeID()
+	if e != nil {
+		return e
+	}
+	scope := "modelgauge-provision-" + id + ".scope"
+	if err = session.trackScope(scope, true); err != nil {
+		return err
+	}
+	wrapped := scopeCommand(scope, script)
+	err = rawShell(ctx, name, wrapped, input, output)
+	recovery, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	stopErr := session.manager.stopScope(recovery, name, scope)
+	cancel()
+	if stopErr != nil {
+		return errors.Join(err, fmt.Errorf("could not confirm guest provisioning stopped: %w", stopErr))
+	}
+	return errors.Join(err, session.trackScope(scope, false))
+}
+func rawShell(ctx context.Context, name, script string, input io.Reader, output io.Writer) error {
+	cmd := platform.CommandContext(ctx, "limactl", "shell", "--workdir", "/", name, "--", "bash", "-lc", script)
+	cmd.Stdin = input
+	cmd.Stdout = output
+	cmd.Stderr = output
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("control VM command: %w", errors.Join(err, ctx.Err()))
+	}
+	return nil
+}
+func (m *ownershipManager) stopScope(ctx context.Context, name, scope string) error {
+	if !validScope.MatchString(scope) {
+		return fmt.Errorf("invalid provisioning scope")
+	}
+	script := `set -eu
+unit=` + quote(scope) + `
+state=$(systemctl --user show "$unit" -p LoadState --value 2>/dev/null || true)
+case "$state" in
+ not-found) ;;
+ loaded) systemctl --user stop "$unit" ;;
+ *) echo "Cannot verify provisioning scope state" >&2; exit 1 ;;
+esac
+`
+	_, err := m.run(ctx, []string{"shell", "--workdir", "/", name, "--", "sh", "-c", script}, nil)
+	return err
+}
+func (s *bootstrapSession) trackScope(scope string, add bool) error {
+	registry, err := s.manager.load()
+	if err != nil {
+		return err
+	}
+	for i := range registry.VMs {
+		if registry.VMs[i].ID == s.vm.ID {
+			var scopes []string
+			for _, value := range registry.VMs[i].Scopes {
+				if value != scope {
+					scopes = append(scopes, value)
+				}
+			}
+			if add {
+				scopes = append(scopes, scope)
+			}
+			registry.VMs[i].Scopes = scopes
+			return s.manager.save(registry)
+		}
+	}
+	return fmt.Errorf("bootstrap ownership disappeared")
+}
+
+func scopeCommand(scope, script string) string {
+	return "exec systemd-run --user --scope --quiet --collect --unit=" + quote(scope) + " bash -lc " + quote(script)
 }

@@ -14,9 +14,9 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/control"
 )
 
-func runNodeManagement(args []string, out, stderr io.Writer) int {
+func runNodeManagement(ctx context.Context, args []string, out, stderr io.Writer) int {
 	if args[0] == "bootstrap" {
-		return bootstrapNode(args[1:], out, stderr)
+		return bootstrapNode(ctx, args[1:], out, stderr)
 	}
 	api := &client.Client{BaseURL: os.Getenv("MODELGAUGE_CONTROLLER_URL"), AdminToken: os.Getenv("MODELGAUGE_ADMIN_TOKEN")}
 	if api.BaseURL == "" || api.AdminToken == "" {
@@ -35,16 +35,17 @@ func runNodeManagement(args []string, out, stderr io.Writer) int {
 		return 2
 	}
 	var response any
-	if _, err := api.DoJSON(context.Background(), "GET", path, "admin", nil, &response); err != nil {
+	if _, err := api.DoJSON(ctx, "GET", path, "admin", nil, &response); err != nil {
 		fmt.Fprintf(stderr, "node status: %v\n", err)
 		return 1
 	}
 	return writeJSON(out, response)
 }
 
-func bootstrapNode(args []string, out, stderr io.Writer) int {
+func bootstrapNode(ctx context.Context, args []string, out, stderr io.Writer) int {
 	f := flag.NewFlagSet("node bootstrap", flag.ContinueOnError)
 	setFlagOutput(f, stderr)
+	timeout := f.Duration("timeout", 45*time.Minute, "overall node bootstrap deadline")
 	provider := f.String("provider", "lima", "node provider")
 	name := f.String("name", "benchmark-node", "Lima VM and node ID")
 	source := f.String("source", "", "Go repository to build the Linux agent")
@@ -74,9 +75,9 @@ func bootstrapNode(args []string, out, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "load control connection (run control bootstrap first): %v\n", err)
 		return 1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
 	defer cancel()
-	if err := control.BootstrapNode(ctx, c, control.NodeOptions{Name: *name, Source: *source, AgentBinary: *binary, Revision: *revision, CPUs: *cpus, MemoryGiB: *memory, DiskGiB: *disk, Log: out}); err != nil {
+	if err := control.BootstrapNode(ctx, c, control.NodeOptions{Name: *name, Source: *source, AgentBinary: *binary, Revision: *revision, CPUs: *cpus, MemoryGiB: *memory, DiskGiB: *disk, Log: stderr}); err != nil {
 		fmt.Fprintf(stderr, "node bootstrap: %v\n", err)
 		return 1
 	}

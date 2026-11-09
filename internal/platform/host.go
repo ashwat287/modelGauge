@@ -2,11 +2,15 @@ package platform
 
 import (
 	"bufio"
+	"context"
 	"fmt"
 	"os"
+	"os/exec"
 	"runtime"
 	"strconv"
 	"strings"
+	"syscall"
+	"time"
 )
 
 // Host describes facts used to identify a benchmark target.
@@ -64,4 +68,23 @@ func totalMemoryBytes() (uint64, error) {
 	default:
 		return 0, fmt.Errorf("memory inspection is unsupported on %s", runtime.GOOS)
 	}
+}
+
+// CommandContext owns a separate process group. Never release a workload lock
+// with its wrapper killed but descendants still executing.
+func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
+	cmd := exec.CommandContext(ctx, name, args...)
+	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}
+	cmd.Cancel = func() error {
+		if cmd.Process == nil {
+			return os.ErrProcessDone
+		}
+		err := syscall.Kill(-cmd.Process.Pid, syscall.SIGKILL)
+		if err == syscall.ESRCH {
+			return os.ErrProcessDone
+		}
+		return err
+	}
+	cmd.WaitDelay = 5 * time.Second
+	return cmd
 }

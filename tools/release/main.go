@@ -9,10 +9,11 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/exec"
+	"os/signal"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"syscall"
 	"time"
 
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
@@ -21,12 +22,15 @@ import (
 )
 
 func main() {
-	if err := run(); err != nil {
+	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer stop()
+	if err := runContext(ctx); err != nil {
 		fmt.Fprintln(os.Stderr, err)
 		os.Exit(1)
 	}
 }
-func run() error {
+func run() error { return runContext(context.Background()) }
+func runContext(ctx context.Context) error {
 	version := flag.String("version", "", "release tag, e.g. v0.1.0")
 	repository := flag.String("repository", buildinfo.Repository, "GitHub owner/repository")
 	commit := flag.String("commit", "", "source commit (default: Git HEAD)")
@@ -47,7 +51,7 @@ func run() error {
 		return fmt.Errorf("invalid GitHub repository")
 	}
 	if *commit == "" {
-		data, err := exec.Command("git", "rev-parse", "HEAD").Output()
+		data, err := platform.CommandContext(ctx, "git", "rev-parse", "HEAD").Output()
 		if err == nil {
 			*commit = strings.TrimSpace(string(data))
 		}
@@ -56,14 +60,14 @@ func run() error {
 		if !regexp.MustCompile(`^[a-f0-9]{40}$`).MatchString(*commit) {
 			return fmt.Errorf("release builds require a committed 40-character source SHA")
 		}
-		head, err := exec.Command("git", "rev-parse", "HEAD").Output()
+		head, err := platform.CommandContext(ctx, "git", "rev-parse", "HEAD").Output()
 		if err != nil {
 			return err
 		}
 		if strings.TrimSpace(string(head)) != *commit {
 			return fmt.Errorf("--commit does not match the checked-out source")
 		}
-		data, err := exec.Command("git", "status", "--porcelain").Output()
+		data, err := platform.CommandContext(ctx, "git", "status", "--porcelain").Output()
 		if err != nil {
 			return err
 		}
@@ -80,7 +84,7 @@ func run() error {
 		return fmt.Errorf("invalid source commit")
 	}
 	if *date == "" {
-		data, err := exec.Command("git", "show", "-s", "--format=%cI", *commit).Output()
+		data, err := platform.CommandContext(ctx, "git", "show", "-s", "--format=%cI", *commit).Output()
 		if err == nil {
 			*date = strings.TrimSpace(string(data))
 		} else if *snapshot {
@@ -102,6 +106,10 @@ func run() error {
 	} else if len(entries) > 0 {
 		return fmt.Errorf("artifact directory is not empty; choose a new --output directory")
 	}
+	marker := filepath.Join(*output, "INCOMPLETE")
+	if err := platform.WriteFile(marker, []byte("Release build is incomplete. Do not publish.\n"), 0600); err != nil {
+		return err
+	}
 	channel := "release"
 	if *snapshot {
 		channel = "snapshot"
@@ -115,7 +123,7 @@ func run() error {
 	for _, target := range []struct{ os, arch string }{{"darwin", "amd64"}, {"darwin", "arm64"}, {"linux", "amd64"}, {"linux", "arm64"}} {
 		name := "modelgauge_" + target.os + "_" + target.arch
 		path := filepath.Join(*output, name)
-		command := exec.CommandContext(context.Background(), "go", "build", "-trimpath", "-buildvcs=false", "-ldflags", strings.Join(flags, " "), "-o", path, "./cmd/modelgauge")
+		command := platform.CommandContext(ctx, "go", "build", "-trimpath", "-buildvcs=false", "-ldflags", strings.Join(flags, " "), "-o", path, "./cmd/modelgauge")
 		for _, value := range os.Environ() {
 			if !strings.HasPrefix(value, "GOOS=") && !strings.HasPrefix(value, "GOARCH=") && !strings.HasPrefix(value, "CGO_ENABLED=") {
 				command.Env = append(command.Env, value)
@@ -149,7 +157,10 @@ func run() error {
 			return err
 		}
 	}
-	return checksums(*output, manifest)
+	if err := checksums(*output, manifest); err != nil {
+		return err
+	}
+	return os.Remove(marker)
 }
 func describe(path, goos, arch string) (releases.Asset, error) {
 	data, err := os.ReadFile(path)
@@ -167,6 +178,9 @@ func validateImage(m releases.Manifest) error {
 	return nil
 }
 func finish(output, image string) error {
+	if _, err := os.Stat(filepath.Join(output, "INCOMPLETE")); err == nil {
+		return fmt.Errorf("release build is incomplete; refusing finalization")
+	}
 	data, err := os.ReadFile(filepath.Join(output, "release.json"))
 	if err != nil {
 		return err
@@ -209,5 +223,5 @@ func checksums(output string, m releases.Manifest) error {
 		return err
 	}
 	fmt.Fprintf(&lines, "%x  release.json\n", sha256.Sum256(data))
-	return os.WriteFile(filepath.Join(output, "SHA256SUMS"), []byte(lines.String()), 0644)
+	return platform.WriteFile(filepath.Join(output, "SHA256SUMS"), []byte(lines.String()), 0644)
 }

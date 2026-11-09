@@ -10,6 +10,9 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/evidence"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"io"
 	"os"
 	"os/exec"
@@ -20,10 +23,6 @@ import (
 	"strconv"
 	"strings"
 	"syscall"
-
-	"github.com/nerdylucifer/modelgauge/internal/evidence"
-	"github.com/nerdylucifer/modelgauge/internal/platform"
-	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 const HelperRelative = ".local/share/modelgauge/guest-helper"
@@ -33,6 +32,7 @@ var ownerPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var forwardPattern = regexp.MustCompile(`^\.config/systemd/user/modelgauge-forward-[0-9]{4,5}\.service$`)
 
 type Request struct {
+	CheckIdle  bool     `json:"check_idle,omitempty"`
 	ID         string   `json:"id"`
 	Role       string   `json:"role"`
 	Operation  string   `json:"operation"`
@@ -43,14 +43,16 @@ type Request struct {
 	Unprepared bool     `json:"unprepared"`
 }
 type State struct {
-	Schema       int                `json:"schema"`
-	ID           string             `json:"id"`
-	MachineID    string             `json:"machine_id"`
-	Role         string             `json:"role"`
-	Directories  []string           `json:"directories"`
-	Files        map[string]*string `json:"files"`
-	HelperSHA256 string             `json:"helper_sha256,omitempty"`
-	Cleaned      bool               `json:"cleaned,omitempty"`
+	PendingHelperSHA256 string                 `json:"pending_helper_sha256,omitempty"`
+	Pending             map[string]PendingFile `json:"pending_files,omitempty"`
+	Schema              int                    `json:"schema"`
+	ID                  string                 `json:"id"`
+	MachineID           string                 `json:"machine_id"`
+	Role                string                 `json:"role"`
+	Directories         []string               `json:"directories"`
+	Files               map[string]*string     `json:"files"`
+	HelperSHA256        string                 `json:"helper_sha256,omitempty"`
+	Cleaned             bool                   `json:"cleaned,omitempty"`
 }
 type Runtime struct {
 	Home, MachineID string
@@ -184,8 +186,13 @@ func (r Runtime) verify(state *State, owner string, fingerprints bool) error {
 		if err != nil {
 			return err
 		}
-		if actual != state.HelperSHA256 {
+		if actual != state.HelperSHA256 && actual != state.PendingHelperSHA256 {
 			return fmt.Errorf("installed guest helper changed")
+		}
+	}
+	for name, pending := range state.Pending {
+		if _, ok := state.Files[name]; !ok || !allowedFile(name) || len(pending.SHA256) != 64 || (pending.Mode != 0600 && pending.Mode != 0755) {
+			return fmt.Errorf("invalid pending file transaction")
 		}
 	}
 	for name, expected := range state.Files {
@@ -208,6 +215,9 @@ func (r Runtime) verify(state *State, owner string, fingerprints bool) error {
 				actual, err := digest(path)
 				if err != nil {
 					return err
+				}
+				if pending, ok := state.Pending[name]; ok && pending.SHA256 == actual {
+					continue
 				}
 				if expected == nil || *expected != actual {
 					return fmt.Errorf("managed file changed or is unsealed: %s", name)
@@ -279,7 +289,7 @@ func (r Runtime) installHelper(state *State) error {
 		if err != nil {
 			return err
 		}
-		if state.HelperSHA256 != "" && actual != state.HelperSHA256 {
+		if state.HelperSHA256 != "" && actual != state.HelperSHA256 && actual != state.PendingHelperSHA256 {
 			return fmt.Errorf("installed guest helper changed")
 		}
 		if state.HelperSHA256 == "" && actual != expected {
@@ -287,6 +297,7 @@ func (r Runtime) installHelper(state *State) error {
 		}
 		if actual == expected {
 			state.HelperSHA256 = expected
+			state.PendingHelperSHA256 = ""
 			return nil
 		}
 	}
@@ -314,10 +325,15 @@ func (r Runtime) installHelper(state *State) error {
 	if closed != nil {
 		return closed
 	}
+	state.PendingHelperSHA256 = expected
+	if err = r.save(state); err != nil {
+		return err
+	}
 	if err = os.Rename(file.Name(), destination); err != nil {
 		return err
 	}
 	state.HelperSHA256 = expected
+	state.PendingHelperSHA256 = ""
 	return nil
 }
 func (r Runtime) active(ctx context.Context) error {
@@ -341,6 +357,9 @@ func (r Runtime) checkJobs(ctx context.Context) error {
 	}
 	if !exists(path) {
 		return nil
+	}
+	if r.Run == nil {
+		return fmt.Errorf("guest command runner unavailable")
 	}
 	env := []string{"KUBECONFIG=" + path}
 	probe, err := r.Run(ctx, []string{"kubectl", "--request-timeout=10s", "-n", "benchmark-data", "get", "pod", "benchmark-postgres-0", "--ignore-not-found", "-o", "name"}, env)
@@ -413,11 +432,50 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 	if err != nil {
 		return nil, err
 	}
+	if state != nil {
+		if err = r.verify(state, request.ID, false); err != nil {
+			return nil, err
+		}
+		create := request.Operation == "prepare" || request.Operation == "seal"
+		release, e := r.lock(".local/share/modelgauge/locks/ownership.lock", create)
+		if e != nil {
+			return nil, e
+		}
+		defer release()
+		state, err = r.load(request)
+		if err != nil {
+			return nil, err
+		}
+	}
 	switch request.Operation {
 	case "prepare":
 		if state != nil {
 			if err = r.verify(state, request.ID, true); err != nil {
 				return nil, err
+			}
+			if err = r.reconcile(state); err != nil {
+				return nil, err
+			}
+			if request.CheckIdle && request.Role == "control" {
+				if err = r.checkJobs(ctx); err != nil {
+					return nil, err
+				}
+			} else if request.CheckIdle {
+				if err = r.active(ctx); err != nil {
+					return nil, err
+				}
+				pending, e := r.safePath(".local/share/modelgauge/results/.pending.json")
+				if e != nil {
+					return nil, e
+				}
+				if exists(pending) {
+					return nil, fmt.Errorf("pending agent work blocks upgrade")
+				}
+				release, e := r.lock(".local/share/modelgauge/locks/execution.lock", false)
+				if e != nil {
+					return nil, e
+				}
+				release()
 			}
 		} else {
 			for _, relative := range roots {
@@ -485,20 +543,14 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 			return nil, err
 		}
 		if request.Operation == "seal" {
-			for name := range state.Files {
-				p, _ := r.safePath(name)
-				if exists(p) {
-					value, e := digest(p)
-					if e != nil {
-						return nil, e
-					}
-					state.Files[name] = &value
-				}
+			if err = r.verify(state, request.ID, true); err != nil {
+				return nil, err
 			}
-			if err = r.save(state); err != nil {
+			if err = r.reconcile(state); err != nil {
 				return nil, err
 			}
 		}
+
 	case "inspect", "quiesce", "clean":
 		if err = r.active(ctx); err != nil {
 			return nil, err
@@ -577,6 +629,9 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 					if e != nil {
 						return nil, e
 					}
+					if pending, ok := state.Pending[name]; ok && pending.SHA256 == actual {
+						expected = &pending.SHA256
+					}
 					if expected == nil || actual != *expected {
 						return nil, fmt.Errorf("file changed during cleanup")
 					}
@@ -642,4 +697,195 @@ func linuxMounts() ([]string, error) {
 		mounts = append(mounts, escaped.ReplaceAllStringFunc(parts[4], func(s string) string { n, _ := strconv.ParseInt(s[1:], 8, 16); return string(rune(n)) }))
 	}
 	return mounts, nil
+}
+
+type PendingFile struct {
+	SHA256 string `json:"sha256"`
+	Mode   uint32 `json:"mode"`
+}
+
+func (r Runtime) ownedState() (*State, error) {
+	path, err := r.safePath(".local/share/modelgauge/.ownership.json")
+	if err != nil {
+		return nil, err
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return nil, err
+	}
+	if !info.Mode().IsRegular() {
+		return nil, fmt.Errorf("manifest is not regular")
+	}
+	data, err := os.ReadFile(path)
+	if err != nil {
+		return nil, err
+	}
+	var state State
+	if err = json.Unmarshal(data, &state); err != nil {
+		return nil, err
+	}
+	return r.load(Request{ID: state.ID, Role: state.Role})
+}
+
+// WriteManaged durably records intended bytes before replacing a reserved file.
+// A crash between rename and final checkpoint can be reconciled by checksum.
+func (r Runtime) WriteManaged(ctx context.Context, relative string, mode os.FileMode, input io.Reader) error {
+	if mode != 0600 && mode != 0755 {
+		return fmt.Errorf("invalid managed file permissions")
+	}
+	if !allowedFile(relative) {
+		return fmt.Errorf("unexpected managed file")
+	}
+	state, err := r.ownedState()
+	if err != nil {
+		return err
+	}
+	if err = r.verify(state, state.ID, false); err != nil {
+		return err
+	}
+	release, err := r.lock(".local/share/modelgauge/locks/ownership.lock", true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	state, err = r.ownedState()
+	if err != nil {
+		return err
+	}
+	if _, ok := state.Files[relative]; !ok {
+		return fmt.Errorf("file was not reserved by this installation")
+	}
+	if err = r.verify(state, state.ID, true); err != nil {
+		return err
+	}
+	destination, err := r.safePath(relative)
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(filepath.Dir(destination), 0700); err != nil {
+		return err
+	}
+	stageDirectory, err := r.safePath(".local/share/modelgauge/staging")
+	if err != nil {
+		return err
+	}
+	if err = os.MkdirAll(stageDirectory, 0700); err != nil {
+		return err
+	}
+	file, err := os.CreateTemp(stageDirectory, ".modelgauge-install-*")
+	if err != nil {
+		return err
+	}
+	defer os.Remove(file.Name())
+	if err = file.Chmod(mode); err == nil {
+		_, err = io.Copy(file, contextReader{ctx, input})
+	}
+	if err == nil {
+		err = file.Sync()
+	}
+	closed := file.Close()
+	if err != nil {
+		return err
+	}
+	if closed != nil {
+		return closed
+	}
+	sum, err := digest(file.Name())
+	if err != nil {
+		return err
+	}
+	if state.Pending == nil {
+		state.Pending = map[string]PendingFile{}
+	}
+	state.Pending[relative] = PendingFile{SHA256: sum, Mode: uint32(mode)}
+	if err = r.save(state); err != nil {
+		return err
+	}
+	if err = ctx.Err(); err != nil {
+		return err
+	}
+	if err = os.Rename(file.Name(), destination); err != nil {
+		return err
+	}
+	dir, err := os.Open(filepath.Dir(destination))
+	if err != nil {
+		return err
+	}
+	err = dir.Sync()
+	dir.Close()
+	if err != nil {
+		return err
+	}
+	return r.reconcile(state)
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
+}
+func (r Runtime) reconcile(state *State) error {
+	for name, pending := range state.Pending {
+		path, err := r.safePath(name)
+		if err != nil {
+			return err
+		}
+		if exists(path) {
+			actual, err := digest(path)
+			if err != nil {
+				return err
+			}
+			if actual == pending.SHA256 {
+				sum := actual
+				state.Files[name] = &sum
+				delete(state.Pending, name)
+			}
+		}
+	}
+	return r.save(state)
+}
+
+// RemoveManaged removes a single verified reserved file, retaining reservation.
+func (r Runtime) RemoveManaged(ctx context.Context, relative string) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	state, err := r.ownedState()
+	if err != nil {
+		return err
+	}
+	if err = r.verify(state, state.ID, false); err != nil {
+		return err
+	}
+	release, err := r.lock(".local/share/modelgauge/locks/ownership.lock", true)
+	if err != nil {
+		return err
+	}
+	defer release()
+	state, err = r.ownedState()
+	if err != nil {
+		return err
+	}
+	if _, ok := state.Files[relative]; !ok || !allowedFile(relative) {
+		return fmt.Errorf("file is not reserved")
+	}
+	if err = r.verify(state, state.ID, true); err != nil {
+		return err
+	}
+	path, err := r.safePath(relative)
+	if err != nil {
+		return err
+	}
+	if err = os.Remove(path); err != nil && !os.IsNotExist(err) {
+		return err
+	}
+	state.Files[relative] = nil
+	delete(state.Pending, relative)
+	return r.save(state)
 }

@@ -82,3 +82,50 @@ func TestCancelledDownloadResumesAndCacheSkipsNetwork(t *testing.T) {
 		t.Fatalf("expected one interrupted transfer and one range resume; got %d requests", calls.Load())
 	}
 }
+
+func TestCancelledReplacementKeepsVerifiedModel(t *testing.T) {
+	directory := t.TempDir()
+	original := []byte("original model")
+	path := filepath.Join(directory, "test.gguf")
+	if err := os.WriteFile(path, original, 0640); err != nil {
+		t.Fatal(err)
+	}
+	replacement := []byte("replacement model data")
+	expected := fmt.Sprintf("%x", sha256.Sum256(replacement))
+	started := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Length", fmt.Sprint(len(replacement)))
+		_, _ = w.Write(replacement[:4])
+		w.(http.Flusher).Flush()
+		close(started)
+		<-r.Context().Done()
+	}))
+	defer server.Close()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan error, 1)
+	go func() {
+		_, err := installAt(ctx, "test", server.URL+"?token=private", expected, directory)
+		done <- err
+	}()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("download did not start")
+	}
+	cancel()
+	if err := <-done; err == nil {
+		t.Fatal("cancelled replacement succeeded")
+	}
+	data, _ := os.ReadFile(path)
+	if string(data) != string(original) {
+		t.Fatal("verified model was replaced")
+	}
+	metadata, err := os.ReadFile(path + ".part.meta.json")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Contains(string(metadata), "token=private") || strings.Contains(string(metadata), server.URL) {
+		t.Fatal("source credentials stored in download identity")
+	}
+}

@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"github.com/nerdylucifer/modelgauge/internal/evidence"
 	"github.com/nerdylucifer/modelgauge/internal/guest"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
-	"os/exec"
 )
 
 // CopyLimaEvidence reads only manifest-listed files. It holds the ownership lock
@@ -71,7 +71,7 @@ actual=$(sha256sum "$helper")
 test "${actual%% *}" = ` + quote(owned.HelperSHA256) + `
 exec "$helper" _guest evidence
 `
-	command := exec.CommandContext(ctx, "limactl", "shell", "--workdir", "/", node, "--", "sh", "-c", script)
+	command := platform.CommandContext(ctx, "limactl", "shell", "--workdir", "/", node, "--", "sh", "-c", script)
 	command.Stdin = bytes.NewReader(data)
 	var stderr bytes.Buffer
 	command.Stderr = &stderr
@@ -82,7 +82,7 @@ exec "$helper" _guest evidence
 	if err = command.Start(); err != nil {
 		return err
 	}
-	receiveErr := evidence.ReceiveArchive(output, destination, refs)
+	receiveErr := evidence.ReceiveArchiveContext(ctx, output, destination, refs)
 	_ = output.Close()
 	if receiveErr != nil {
 		_ = command.Process.Kill()

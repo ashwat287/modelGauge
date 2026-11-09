@@ -12,7 +12,6 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -23,9 +22,13 @@ import (
 const ownershipSchema = "modelgauge-ownership/v1"
 
 var validOwner = regexp.MustCompile(`^[a-f0-9]{32}$`)
+var validScope = regexp.MustCompile(`^modelgauge-provision-[a-f0-9]{32}\.scope$`)
 var validVMName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
 type ownedVM struct {
+	Scopes         []string `json:"provisioning_scopes,omitempty"`
+	BootstrapState string   `json:"bootstrap_state,omitempty"`
+
 	Name         string   `json:"name"`
 	ID           string   `json:"id"`
 	Role         string   `json:"role"`
@@ -63,13 +66,13 @@ func newOwnershipManager() (*ownershipManager, error) {
 	return &ownershipManager{directory: filepath.Join(home, ".config", "modelgauge"), run: runLima}, nil
 }
 func runLima(ctx context.Context, args []string, input []byte) ([]byte, error) {
-	cmd := exec.CommandContext(ctx, "limactl", args...)
+	cmd := platform.CommandContext(ctx, "limactl", args...)
 	cmd.Stdin = bytes.NewReader(input)
 	var out, stderr bytes.Buffer
 	cmd.Stdout = &out
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return nil, fmt.Errorf("limactl: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return nil, fmt.Errorf("limactl: %w: %s", errors.Join(err, ctx.Err()), strings.TrimSpace(stderr.String()))
 	}
 	return out.Bytes(), nil
 }
@@ -128,6 +131,11 @@ func (m *ownershipManager) load() (ownershipRegistry, error) {
 		}
 		if (v.HelperSHA256 != "" || v.HelperArch != "") && (!regexp.MustCompile(`^[a-f0-9]{64}$`).MatchString(v.HelperSHA256) || (v.HelperArch != "amd64" && v.HelperArch != "arm64")) {
 			return registry, fmt.Errorf("invalid guest helper identity")
+		}
+		for _, scope := range v.Scopes {
+			if !validScope.MatchString(scope) {
+				return registry, fmt.Errorf("invalid provisioning scope")
+			}
 		}
 		names[v.Name] = true
 	}
@@ -248,14 +256,26 @@ func provisionVM(ctx context.Context, name, role string, cpus, memory, disk, por
 	m.binary = func(ctx context.Context, arch string) ([]byte, error) { return nodeBinary(ctx, options, arch) }
 	return m.provision(ctx, name, role, cpus, memory, disk, port, log)
 }
-func (m *ownershipManager) provision(ctx context.Context, name, role string, cpus, memory, disk, port int, log io.Writer) (context.Context, func() error, error) {
+func (m *ownershipManager) provision(ctx context.Context, name, role string, cpus, memory, disk, port int, log io.Writer) (managed context.Context, done func() error, resultErr error) {
 	unlock, err := m.lock()
 	if err != nil {
 		return ctx, nil, err
 	}
 	failed := true
+	session := &bootstrapSession{manager: m}
+	session.previousConnection, _ = os.ReadFile(m.directory + "/control.json")
 	defer func() {
 		if failed {
+			if session.newVM && session.vm.Dir != "" {
+				recovery, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+				err := m.rollbackNewVM(recovery, session.vm, session.previousConnection)
+				cancel()
+				if err != nil {
+					resultErr = errors.Join(resultErr, fmt.Errorf("rollback failed; ownership retained: %w", err))
+				} else {
+					resultErr = errors.Join(resultErr, fmt.Errorf("rollback completed: newly created VM %s removed", name))
+				}
+			}
 			unlock()
 		}
 	}()
@@ -290,7 +310,7 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 		if _, err = rand.Read(owner); err != nil {
 			return ctx, nil, err
 		}
-		v := ownedVM{Name: name, Role: role, ID: hex.EncodeToString(owner), Created: !exists, Files: reservedFiles(role, port)}
+		v := ownedVM{BootstrapState: "provisioning", Name: name, Role: role, ID: hex.EncodeToString(owner), Created: !exists, Files: reservedFiles(role, port)}
 		if !exists {
 			fmt.Fprintf(log, "Creating owned Lima VM %s\n", name)
 			_, err = m.run(ctx, []string{"create", "--tty=false", "--name", name, "--cpus", fmt.Sprint(cpus), "--memory", fmt.Sprint(memory), "--disk", fmt.Sprint(disk), "--containerd", "none", "template:ubuntu"}, nil)
@@ -327,6 +347,10 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 				return ctx, nil, closeErr
 			}
 		}
+		if v.Created {
+			session.newVM = true
+			session.vm = v
+		}
 		registry.VMs = append(registry.VMs, v)
 		index = len(registry.VMs) - 1
 		if err = m.save(registry); err != nil {
@@ -348,17 +372,41 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 	if prior := registry.VMs[index].MachineID; prior != "" && prior != identity {
 		return ctx, nil, fmt.Errorf("guest VM identity changed")
 	}
+	for _, scope := range registry.VMs[index].Scopes {
+		if err = m.stopScope(ctx, name, scope); err != nil {
+			return ctx, nil, fmt.Errorf("stop interrupted provisioning: %w", err)
+		}
+	}
+	registry.VMs[index].Scopes = nil
+	registry.VMs[index].BootstrapState = "provisioning"
+
 	registry.VMs[index].MachineID = identity
+	session.vm = registry.VMs[index]
+	priorHelper := registry.VMs[index]
+	var previousHelper []byte
+	if !session.newVM && priorHelper.HelperSHA256 != "" {
+		previousHelper, err = m.readHelper(priorHelper)
+		if err != nil {
+			return ctx, nil, err
+		}
+	}
 	if err = m.prepareHelper(ctx, &registry.VMs[index]); err != nil {
 		return ctx, nil, err
 	}
 	if err = m.save(registry); err != nil {
 		return ctx, nil, err
 	}
+	session.vm = registry.VMs[index]
 	v := registry.VMs[index]
 	files := reservedFiles(role, port)
-	prepared, err := m.guest(ctx, v, "prepare", files)
+	prepared, err := m.guest(ctx, v, "bootstrap-prepare", files)
 	if err != nil {
+		if len(previousHelper) > 0 {
+			recovery, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			restoreErr := m.restorePreviousHelper(recovery, priorHelper, previousHelper)
+			cancel()
+			err = errors.Join(err, restoreErr)
+		}
 		return ctx, nil, err
 	}
 	registry.VMs[index].Prepared = true
@@ -376,10 +424,15 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 	if err = m.save(registry); err != nil {
 		return ctx, nil, err
 	}
+	session.vm = registry.VMs[index]
+	ctx = context.WithValue(ctx, bootstrapKey{}, session)
 	ctx = context.WithValue(ctx, ownershipContextKey{}, m)
 	failed = false
 	finish := func() error {
 		defer unlock()
+		if session.aborted {
+			return nil
+		}
 		sealCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		defer cancel()
 		_, e := m.guest(sealCtx, registry.VMs[index], "seal", nil)
@@ -480,4 +533,153 @@ func ownershipID(ctx context.Context, name string) (string, error) {
 		}
 	}
 	return "", fmt.Errorf("ownership record missing")
+}
+
+type bootstrapKey struct{}
+type bootstrapSession struct {
+	manager            *ownershipManager
+	vm                 ownedVM
+	newVM              bool
+	aborted            bool
+	previousConnection []byte
+}
+
+// completeProvision runs on every ordinary failure and graceful cancellation.
+// A fresh recovery context is necessary because provisioning may be cancelled.
+func completeProvision(ctx context.Context, finish func() error, resultErr *error) {
+	if recover() != nil {
+		*resultErr = errors.Join(*resultErr, fmt.Errorf("unexpected provisioning failure"))
+	}
+	session, _ := ctx.Value(bootstrapKey{}).(*bootstrapSession)
+	if session == nil {
+		*resultErr = errors.Join(*resultErr, finish())
+		return
+	}
+	defer func() { session.aborted = true; *resultErr = errors.Join(*resultErr, finish()) }()
+	if *resultErr == nil {
+		check, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		_, err := session.manager.guest(check, session.vm, "seal", nil)
+		cancel()
+		if err == nil {
+			registry, e := session.manager.load()
+			if e == nil {
+				for i := range registry.VMs {
+					if registry.VMs[i].ID == session.vm.ID {
+						registry.VMs[i].BootstrapState = "ready"
+					}
+				}
+				e = session.manager.save(registry)
+			}
+			if e == nil {
+				return
+			}
+			err = e
+		}
+		*resultErr = fmt.Errorf("finalize ownership: %w", err)
+	}
+	if !session.newVM {
+		if registry, e := session.manager.load(); e == nil {
+			for i := range registry.VMs {
+				if registry.VMs[i].ID == session.vm.ID {
+					registry.VMs[i].BootstrapState = "recovery_required"
+				}
+			}
+			*resultErr = errors.Join(*resultErr, session.manager.save(registry))
+		}
+		*resultErr = errors.Join(*resultErr, fmt.Errorf("existing VM %s retained; verified file checkpoints preserved; retry after resolving the original error", session.vm.Name))
+
+		return
+	}
+	recovery, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
+	defer cancel()
+	if err := session.manager.rollbackNewVM(recovery, session.vm, session.previousConnection); err != nil {
+		*resultErr = errors.Join(*resultErr, fmt.Errorf("rollback failed; ownership retained for %s: %w", session.vm.Name, err))
+
+	} else {
+		*resultErr = errors.Join(*resultErr, fmt.Errorf("rollback completed: newly created VM %s removed; previous installations preserved", session.vm.Name))
+
+	}
+}
+
+// rollbackNewVM only receives provenance from the invocation that created it.
+// It does not use guest file sealing as authority to delete an entire new VM.
+func (m *ownershipManager) rollbackNewVM(ctx context.Context, v ownedVM, previous []byte) error {
+	instances, err := m.instances(ctx)
+	if err != nil {
+		return err
+	}
+	vm, present := instances[v.Name]
+	if present {
+		if !v.Created {
+			return fmt.Errorf("refusing rollback of a reused VM")
+		}
+		if vm.Protected {
+			return fmt.Errorf("VM is protected")
+		}
+		if err = verifyVM(v, vm); err != nil {
+			return err
+		}
+		if vm.Status == "Running" && v.MachineID != "" {
+			raw, e := m.run(ctx, []string{"shell", "--workdir", "/", v.Name, "--", "cat", "/etc/machine-id"}, nil)
+			if e != nil {
+				return e
+			}
+			if strings.TrimSpace(string(raw)) != v.MachineID {
+				return fmt.Errorf("guest identity changed")
+			}
+		}
+		if _, err = m.run(ctx, []string{"stop", v.Name}, nil); err != nil {
+			return err
+		}
+		current, e := m.instances(ctx)
+		if e != nil {
+			return e
+		}
+		latest, ok := current[v.Name]
+		if !ok {
+			return fmt.Errorf("VM disappeared during rollback; reconcile on retry")
+		}
+		if latest.Protected || latest.Status != "Stopped" {
+			return fmt.Errorf("VM did not stop or became protected")
+		}
+		if err = verifyVM(v, latest); err != nil {
+			return err
+		}
+		if _, err = m.run(ctx, []string{"delete", "--tty=false", v.Name}, nil); err != nil {
+			return err
+		}
+	}
+	registry, err := m.load()
+	if err != nil {
+		return err
+	}
+	if err = m.removeConnection(v); err != nil {
+		return err
+	}
+	// Restore the previous active connection only if rollback removed ours.
+	path := m.directory + "/control.json"
+	if len(previous) > 0 {
+		if _, e := os.Lstat(path); os.IsNotExist(e) {
+			if err = platform.WriteFile(path, previous, 0600); err != nil {
+				return err
+			}
+		}
+	}
+	if err = m.removeHelper(v); err != nil {
+		return err
+	}
+	remaining := []ownedVM{}
+	for _, entry := range registry.VMs {
+		if entry.ID != v.ID {
+			remaining = append(remaining, entry)
+		}
+	}
+	registry.VMs = remaining
+	return m.save(registry)
+}
+
+func newScopeID() (string, error) {
+	value := make([]byte, 16)
+	_, err := rand.Read(value)
+	return hex.EncodeToString(value), err
 }

@@ -432,6 +432,6 @@ func LocalEvidence(root string) func(context.Context, []protocol.EvidenceRef, st
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		return evidence.CopyLocal(root, destination, refs)
+		return evidence.CopyLocalContext(ctx, root, destination, refs)
 	}
 }

@@ -2,6 +2,7 @@
 package profile
 
 import (
+	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
@@ -31,6 +32,9 @@ type Options struct {
 func Names() []string { return []string{StandardCPU} }
 
 func StandardCPUPlan(options Options) (protocol.Plan, error) {
+	return StandardCPUPlanContext(context.Background(), options)
+}
+func StandardCPUPlanContext(ctx context.Context, options Options) (protocol.Plan, error) {
 	if options.NodeID == "" || options.ModelPath == "" {
 		return protocol.Plan{}, fmt.Errorf("node ID and model path are required")
 	}
@@ -61,7 +65,7 @@ func StandardCPUPlan(options Options) (protocol.Plan, error) {
 	digest := options.ModelSHA256
 	if digest == "" {
 		var err error
-		digest, err = sha256File(options.ModelPath)
+		digest, err = sha256File(ctx, options.ModelPath)
 		if err != nil {
 			return protocol.Plan{}, err
 		}
@@ -95,15 +99,27 @@ func trimExtension(value string) string {
 	extension := filepath.Ext(value)
 	return value[:len(value)-len(extension)]
 }
-func sha256File(path string) (string, error) {
+func sha256File(ctx context.Context, path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", fmt.Errorf("open model: %w", err)
 	}
 	defer file.Close()
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	if _, err := io.Copy(hash, contextReader{ctx, file}); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }

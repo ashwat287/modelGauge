@@ -23,6 +23,9 @@ var recoverySchema string
 var ErrNotFound = errors.New("not found")
 var ErrConflict = errors.New("state conflict")
 
+//go:embed migrations/003-submission-requests.sql
+var requestSchema string
+
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -123,6 +126,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return fmt.Errorf("apply initial schema: %w", err)
 	}
 	if _, err = tx.Exec(ctx, recoverySchema); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, requestSchema); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)

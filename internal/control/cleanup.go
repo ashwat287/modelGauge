@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strings"
 	"time"
 )
 
@@ -86,7 +87,7 @@ func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (repor
 			}
 		}
 	}()
-	for _, v := range registry.VMs {
+	for index, v := range registry.VMs {
 		target := CleanupTarget{Name: v.Name, Created: v.Created, Delete: o.DeleteVMs && v.Created}
 		vm, exists := instances[v.Name]
 		if !exists {
@@ -99,6 +100,12 @@ func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (repor
 		}
 		if target.Delete && vm.Protected {
 			return report, fmt.Errorf("VM %s is protected; refusing deletion", v.Name)
+		}
+		if o.DryRun && len(v.Scopes) > 0 {
+			target.Status = "provisioning_recovery_required"
+			target.Note = "Interrupted provisioning scopes must be stopped by actual cleanup before guest verification"
+			report.Targets = append(report.Targets, target)
+			continue
 		}
 		if vm.Status != "Running" || o.DryRun && (!v.Prepared || v.Cleaned) {
 			if o.DryRun {
@@ -117,16 +124,45 @@ func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (repor
 			}
 			restarted = append(restarted, v.Name)
 		}
-		data, e := m.guest(ctx, v, "inspect", v.Files)
+		if len(v.Scopes) > 0 {
+			raw, e := m.run(ctx, []string{"shell", "--workdir", "/", v.Name, "--", "cat", "/etc/machine-id"}, nil)
+			if e != nil {
+				return report, e
+			}
+			if strings.TrimSpace(string(raw)) != v.MachineID {
+				return report, fmt.Errorf("guest identity changed before provisioning recovery")
+			}
+			for _, scope := range v.Scopes {
+				if e = m.stopScope(ctx, v.Name, scope); e != nil {
+					return report, e
+				}
+			}
+			registry.VMs[index].Scopes = nil
+			if e = m.save(registry); e != nil {
+				return report, e
+			}
+		}
+		inspection := "inspect-cleanup"
+		if o.DryRun {
+			inspection = "inspect"
+		}
+		data, e := m.guest(ctx, v, inspection, v.Files)
 		if e != nil {
 			return report, e
 		}
 		var snapshot struct {
+			Cleaned     bool               `json:"cleaned"`
 			Directories []string           `json:"directories"`
 			Files       map[string]*string `json:"files"`
 		}
 		if e = json.Unmarshal(data, &snapshot); e != nil {
 			return report, e
+		}
+		if snapshot.Cleaned && !o.DryRun {
+			registry.VMs[index].Cleaned = true
+			if e = m.save(registry); e != nil {
+				return report, e
+			}
 		}
 		target.Directories = snapshot.Directories
 		target.Files = snapshot.Files

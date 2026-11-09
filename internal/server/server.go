@@ -124,12 +124,21 @@ func (s *Server) queueInstall(w http.ResponseWriter, r *http.Request) {
 		writeError(w, 400, "model_id and source_url are required")
 		return
 	}
-	id, err := s.store.QueueInstall(r.Context(), j)
+	id, err := s.store.QueueInstallRequest(r.Context(), j, r.Header.Get("X-ModelGauge-Request-ID"))
+	if err != nil {
+		if errors.Is(err, controller.ErrConflict) {
+			writeError(w, 409, "request ID already used for different content")
+			return
+		}
+		s.internalError(w, r, err)
+		return
+	}
+	job, err := s.store.GetInstall(r.Context(), id)
 	if err != nil {
 		s.internalError(w, r, err)
 		return
 	}
-	writeJSON(w, 201, map[string]string{"job_id": id, "status": "queued"})
+	writeJSON(w, 201, map[string]string{"job_id": id, "status": job.Status})
 }
 func (s *Server) leaseInstall(w http.ResponseWriter, r *http.Request) {
 	j, err := s.store.LeaseInstall(r.Context(), r.PathValue("nodeID"))
@@ -245,7 +254,7 @@ func (s *Server) healthz(writer http.ResponseWriter, request *http.Request) {
 		writeError(writer, http.StatusServiceUnavailable, "database unavailable")
 		return
 	}
-	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok", "database": "reachable", "version": buildinfo.Version, "commit": buildinfo.Commit})
+	writeJSON(writer, http.StatusOK, map[string]string{"status": "ok", "database": "reachable", "version": buildinfo.Version, "commit": buildinfo.Commit, "submission_protocol": "idempotent-v1"})
 }
 
 func (s *Server) metrics(writer http.ResponseWriter, request *http.Request) {
@@ -331,12 +340,21 @@ func (s *Server) queuePlan(writer http.ResponseWriter, request *http.Request) {
 	if !decodeJSON(writer, request, &plan) {
 		return
 	}
-	planID, err := s.store.QueuePlan(request.Context(), plan)
+	planID, err := s.store.QueuePlanRequest(request.Context(), plan, request.Header.Get("X-ModelGauge-Request-ID"))
 	if err != nil {
+		if errors.Is(err, controller.ErrConflict) {
+			writeError(writer, 409, "request ID already used for different content")
+			return
+		}
 		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
-	writeJSON(writer, http.StatusCreated, map[string]string{"plan_id": planID, "status": "queued"})
+	state, err := s.store.GetPlanStatus(request.Context(), planID)
+	if err != nil {
+		s.internalError(writer, request, err)
+		return
+	}
+	writeJSON(writer, http.StatusCreated, map[string]string{"plan_id": planID, "status": state.Status})
 }
 
 func (s *Server) leasePlan(writer http.ResponseWriter, request *http.Request) {

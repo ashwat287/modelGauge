@@ -9,7 +9,7 @@ import (
 	"time"
 )
 
-func runCleanup(args []string, out, stderr io.Writer) int {
+func runCleanup(ctx context.Context, args []string, out, stderr io.Writer) int {
 	f := flag.NewFlagSet("cleanup", flag.ContinueOnError)
 	setFlagOutput(f, stderr)
 	dryRun := f.Bool("dry-run", false, "preview ownership-verified cleanup without changing resources or starting VMs")
@@ -21,8 +21,11 @@ func runCleanup(args []string, out, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "cleanup takes flags only")
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
+	if !*dryRun {
+
+	}
 	report, err := control.Cleanup(ctx, control.CleanupOptions{DryRun: *dryRun, DeleteVMs: *deleteVMs})
 	if err != nil {
 		fmt.Fprintf(stderr, "cleanup refused or interrupted (ownership records retained for retry): %v\n", err)

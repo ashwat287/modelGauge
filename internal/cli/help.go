@@ -133,7 +133,7 @@ Always set --execution-mode lima-linux for Lima targets. See docs/BENCHMARKING.m
     --models qwen2.5-1.5b-instruct:q4_k_m,qwen2.5-1.5b-instruct:q5_k_m \
     --contexts 512,4096 --threads 1,2 --output comparison --submit
   modelgauge benchmark campaign status --file comparison/campaign.json
-Use a fresh output directory per experiment. A campaign is a local manifest, not an atomic queue transaction.`,
+Use a fresh output directory per experiment. Resume interrupted generation/submission with --resume and identical flags. Accepted jobs are preserved.`,
 	"benchmark plan": `📋 Plans — generate a reproducible standard-cpu matrix
   modelgauge benchmark plan create --node linux-node --model /absolute/model.gguf \
     --model-id custom-model --contexts 512,4096 --threads 1,2 --output plan.json

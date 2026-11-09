@@ -14,6 +14,7 @@ Human help and success messages use emojis. JSON commands have no decorative
 prefixes. `version` alone remains a plain version string. Failures go to stderr.
 Exit codes are `0` for success/help, `1` for operational failure and `2` for
 usage/configuration errors; some plan load failures also return `1`.
+Cancelled commands can return `130` (SIGINT), `143` (SIGTERM), or `129` (SIGHUP).
 
 Remote commands use the saved active control connection unless overridden by
 `MODELGAUGE_CONTROLLER_URL` / `MODELGAUGE_ADMIN_TOKEN`. Commands exposing
@@ -33,6 +34,7 @@ modelgauge monitoring open
 | `--provider` | `lima` | Only automated provider |
 | `--name` | saved active VM or `modelgauge-control` | Create/reuse VM |
 | `--source` | auto checkout for development | Build controller locally using Go |
+| `--timeout`, `--readiness-timeout` | `60m`, `10m` | Overall bootstrap and per-deployment rollout deadlines |
 | `--helper-binary` | automatic matching Linux executable | Development override for the Linux guest helper when using an image without source |
 | `--image` | matching release image for release CLI | Explicit prebuilt controller reference |
 | `--cpus`, `--memory`, `--disk` | `4`, `6`, `50` | New VM resources; memory/disk in GiB |
@@ -57,7 +59,7 @@ modelgauge node inspect
 
 Node bootstrap flags: `--provider lima`, `--name benchmark-node`, `--cpus 2`,
 `--memory 3`, `--disk 30`, `--source REPO`, `--agent-binary LINUX_EXECUTABLE`,
-`--llama-revision FULL_COMMIT`. Release CLIs download a matching Linux agent;
+`--llama-revision FULL_COMMIT`, `--timeout 45m`. Release CLIs download a matching Linux agent;
 source builds compile it. The pinned llama.cpp revision is
 `eb4e244be77a906a183cd4a00fd51d9ad3200955`. Node management queries return JSON.
 
@@ -103,7 +105,8 @@ named local output directory. Set `--execution-mode lima-linux` for Lima targets
 Optional `--binary` selects a llama-bench path on the target. `--submit` queues
 one plan per model; without it, plans are written only. Repeated `--submit`
 creates new jobs. A campaign is not an atomic database batch: a later failure
-can leave earlier plans queued. Inspect saved files and server state before retrying.
+can leave earlier plans queued. Use `--resume` with the same output and flags
+to reconcile saved request IDs without duplicating accepted plans.
 
 `status --file FILE` reads its local campaign manifest and queries submitted plan
 states. It returns JSON; it does not block until completion or cancel the campaign.
@@ -132,7 +135,8 @@ modelgauge benchmark cancel PLAN_ID
 `plan validate` checks structure, not model existence or thermal state.
 `benchmark plan create` hashes a file visible to the CLI, so a remote node-only
 path cannot be used from the host. Use campaigns for managed remote models.
-Available flags also include `--binary`; `--profile` currently accepts only
+Available flags also include `--binary` and `--overwrite` (explicit replacement
+of an existing generated plan); `--profile` currently accepts only
 `standard-cpu`. Generated zero `--warmups` / `--repetitions` values fall back to
 profile defaults; use a custom validated plan for other supported case shapes.
 

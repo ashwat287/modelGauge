@@ -2,10 +2,15 @@ package controller
 
 import (
 	"context"
+	"crypto/sha256"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
-	"time"
-
+	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
+	"regexp"
+	"time"
 )
 
 const JobTTL = 2 * time.Minute
@@ -115,4 +120,72 @@ func (s *Store) completeInstall(ctx context.Context, node, id, token, failure st
 		return ErrConflict
 	}
 	return nil
+}
+
+var requestIDPattern = regexp.MustCompile(`^[a-f0-9]{64}$`)
+
+func (s *Store) QueuePlanRequest(ctx context.Context, plan protocol.Plan, key string) (string, error) {
+	if key == "" {
+		return s.QueuePlan(ctx, plan)
+	}
+	if err := plan.Validate(); err != nil {
+		return "", err
+	}
+	data, err := json.Marshal(plan)
+	if err != nil {
+		return "", err
+	}
+	return s.queueRequest(ctx, key, "benchmark", data, func(tx pgx.Tx) (string, error) {
+		var id string
+		err := tx.QueryRow(ctx, `INSERT INTO benchmark_plans(node_id,specification) VALUES($1,$2) RETURNING plan_id::text`, plan.NodeID, data).Scan(&id)
+		return id, err
+	})
+}
+func (s *Store) QueueInstallRequest(ctx context.Context, j InstallJob, key string) (string, error) {
+	if key == "" {
+		return s.QueueInstall(ctx, j)
+	}
+	data, err := json.Marshal(struct{ Node, Model, Source, SHA string }{j.NodeID, j.ModelID, j.SourceURL, j.SHA256})
+	if err != nil {
+		return "", err
+	}
+	return s.queueRequest(ctx, key, "install", data, func(tx pgx.Tx) (string, error) {
+		var id string
+		err := tx.QueryRow(ctx, `INSERT INTO model_install_jobs(node_id,model_id,source_url,expected_sha256) VALUES($1,$2,$3,$4) RETURNING job_id::text`, j.NodeID, j.ModelID, j.SourceURL, j.SHA256).Scan(&id)
+		return id, err
+	})
+}
+func (s *Store) queueRequest(ctx context.Context, key, kind string, payload []byte, create func(pgx.Tx) (string, error)) (string, error) {
+	if !requestIDPattern.MatchString(key) {
+		return "", fmt.Errorf("invalid request ID")
+	}
+	sum := sha256.Sum256(payload)
+	digest := hex.EncodeToString(sum[:])
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return "", err
+	}
+	defer tx.Rollback(context.Background())
+	if _, err = tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1,0))`, key); err != nil {
+		return "", err
+	}
+	var previousKind, previousHash, id string
+	err = tx.QueryRow(ctx, `SELECT kind,request_sha256,resource_id::text FROM submission_requests WHERE request_id=$1`, key).Scan(&previousKind, &previousHash, &id)
+	if err == nil {
+		if previousKind != kind || previousHash != digest {
+			return "", ErrConflict
+		}
+		return id, tx.Commit(ctx)
+	}
+	if !errors.Is(err, pgx.ErrNoRows) {
+		return "", err
+	}
+	id, err = create(tx)
+	if err != nil {
+		return "", err
+	}
+	if _, err = tx.Exec(ctx, `INSERT INTO submission_requests(request_id,request_sha256,kind,resource_id) VALUES($1,$2,$3,$4)`, key, digest, kind, id); err != nil {
+		return "", err
+	}
+	return id, tx.Commit(ctx)
 }

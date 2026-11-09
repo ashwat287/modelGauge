@@ -6,24 +6,26 @@ import (
 	"errors"
 	"flag"
 	"fmt"
-	"io"
-	"os"
-	"path/filepath"
-	"runtime"
-	"strconv"
-	"strings"
-
 	"github.com/nerdylucifer/modelgauge/internal/benchmark"
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/client"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/internal/profile"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
+	"io"
+	"os"
+	"os/signal"
+	"path/filepath"
+	"regexp"
+	"runtime"
+	"strconv"
+	"strings"
+	"syscall"
 )
 
-func Run(args []string, stdout, stderr io.Writer) int {
+func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] == "_guest" {
-		return runGuest(args[1:], stdout, stderr)
+		return runGuest(ctx, args[1:], stdout, stderr)
 	}
 	if handled, code := showRequestedHelp(args, stdout); handled {
 		return code
@@ -36,13 +38,13 @@ func Run(args []string, stdout, stderr io.Writer) int {
 
 	switch args[0] {
 	case "export":
-		return runExport(args[1:], stdout, stderr)
+		return runExport(ctx, args[1:], stdout, stderr)
 	case "cleanup":
-		return runCleanup(args[1:], stdout, stderr)
+		return runCleanup(ctx, args[1:], stdout, stderr)
 	case "control":
-		return runControl(args[1:], stdout, stderr)
+		return runControl(ctx, args[1:], stdout, stderr)
 	case "monitoring":
-		return runMonitoring(args[1:], stdout, stderr)
+		return runMonitoring(ctx, args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		printUsage(stdout)
 		return 0
@@ -57,19 +59,19 @@ func Run(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, buildinfo.Version)
 		return 0
 	case "plan":
-		return runPlan(args[1:], stdout, stderr)
+		return runPlan(ctx, args[1:], stdout, stderr)
 	case "node":
-		return runNode(args[1:], stdout, stderr)
+		return runNode(ctx, args[1:], stdout, stderr)
 	case "benchmark":
-		return runBenchmark(args[1:], stdout, stderr)
+		return runBenchmark(ctx, args[1:], stdout, stderr)
 	case "server":
-		return runServer(args[1:], stdout, stderr)
+		return runServer(ctx, args[1:], stdout, stderr)
 	case "agent":
-		return runAgent(args[1:], stdout, stderr)
+		return runAgent(ctx, args[1:], stdout, stderr)
 	case "results":
-		return runResults(args[1:], stdout, stderr)
+		return runResults(ctx, args[1:], stdout, stderr)
 	case "model":
-		return runModel(args[1:], stdout, stderr)
+		return runModel(ctx, args[1:], stdout, stderr)
 	default:
 		fmt.Fprintf(stderr, "unknown command %q\n\n", args[0])
 		printUsage(stderr)
@@ -77,7 +79,7 @@ func Run(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runResults(args []string, stdout, stderr io.Writer) int {
+func runResults(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: modelgauge results <show|recommend> ...")
 		return 2
@@ -102,7 +104,7 @@ func runResults(args []string, stdout, stderr io.Writer) int {
 	switch args[0] {
 	case "show":
 		var results any
-		if _, err := api.DoJSON(context.Background(), "GET", "/v1/nodes/"+*nodeID+"/results", "admin", nil, &results); err != nil {
+		if _, err := api.DoJSON(ctx, "GET", "/v1/nodes/"+*nodeID+"/results", "admin", nil, &results); err != nil {
 			fmt.Fprintf(stderr, "get results: %v\n", err)
 			return 1
 		}
@@ -115,7 +117,7 @@ func runResults(args []string, stdout, stderr io.Writer) int {
 		budgetBytes := int64(*memoryGiB * 1024 * 1024 * 1024)
 		path := fmt.Sprintf("/v1/nodes/%s/recommendation?model=%s&execution_mode=%s&context=%d&memory_budget_bytes=%d", *nodeID, *modelID, *mode, *contextTokens, budgetBytes)
 		var recommendation any
-		if _, err := api.DoJSON(context.Background(), "GET", path, "admin", nil, &recommendation); err != nil {
+		if _, err := api.DoJSON(ctx, "GET", path, "admin", nil, &recommendation); err != nil {
 			fmt.Fprintf(stderr, "get recommendation: %v\n", err)
 			return 1
 		}
@@ -126,7 +128,7 @@ func runResults(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runPlan(args []string, stdout, stderr io.Writer) int {
+func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: modelgauge plan <example|validate>")
 		return 2
@@ -165,16 +167,16 @@ func runPlan(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runBenchmark(args []string, stdout, stderr io.Writer) int {
+func runBenchmark(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: modelgauge benchmark <profiles|plan|run|submit> ...")
 		return 2
 	}
 	switch args[0] {
 	case "cancel":
-		return cancelJob(args[1:], stdout, stderr, false)
+		return cancelJob(ctx, args[1:], stdout, stderr, false)
 	case "campaign":
-		return runCampaign(args[1:], stdout, stderr)
+		return runCampaign(ctx, args[1:], stdout, stderr)
 	case "profiles":
 		if len(args) != 2 || args[1] != "list" {
 			fmt.Fprintln(stderr, "usage: modelgauge benchmark profiles list")
@@ -182,7 +184,7 @@ func runBenchmark(args []string, stdout, stderr io.Writer) int {
 		}
 		return writeJSON(stdout, profile.Names())
 	case "plan":
-		return runBenchmarkPlan(args[1:], stdout, stderr)
+		return runBenchmarkPlan(ctx, args[1:], stdout, stderr)
 	case "run":
 		flags := flag.NewFlagSet("benchmark run", flag.ContinueOnError)
 		setFlagOutput(flags, stderr)
@@ -195,7 +197,7 @@ func runBenchmark(args []string, stdout, stderr io.Writer) int {
 		if !ok {
 			return 1
 		}
-		result, outputDir, err := benchmark.Run(context.Background(), plan, *outputPath)
+		result, outputDir, err := benchmark.Run(ctx, plan, *outputPath)
 		if err != nil {
 			fmt.Fprintf(stderr, "run benchmark: %v\n", err)
 			return 1
@@ -220,16 +222,32 @@ func runBenchmark(args []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		api := &client.Client{BaseURL: *controllerURL, AdminToken: *adminToken}
-		var response struct {
-			PlanID string `json:"plan_id"`
-			Status string `json:"status"`
-		}
-		_, err := api.DoJSON(context.Background(), "POST", "/v1/plans", "admin", plan, &response)
+		directory, err := submissionCacheDir()
 		if err != nil {
-			fmt.Fprintf(stderr, "submit plan: %v\n", err)
+			fmt.Fprintln(stderr, err)
 			return 1
 		}
-		fmt.Fprintf(stdout, "queued %s\n", response.PlanID)
+		absolute, err := filepath.Abs(*planPath)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		pending, err := reserveSubmission(directory, api.BaseURL+"\n/v1/plans\n"+absolute, plan)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer pending.close()
+		var response client.Submission
+		if _, err = api.SubmitJSON(ctx, "/v1/plans", pending.RequestID, plan, &response); err != nil {
+			fmt.Fprintf(stderr, "submit plan: %v; retry the same command to check the existing submission safely\n", err)
+			return 1
+		}
+		if _, err = fmt.Fprintf(stdout, "%s %s\n", response.Status, response.PlanID); err != nil {
+			fmt.Fprintln(stderr, "write submission response:", err)
+			return 1
+		}
+		pending.complete(stderr)
 		return 0
 	default:
 		fmt.Fprintf(stderr, "unknown benchmark command %q\n", args[0])
@@ -237,7 +255,7 @@ func runBenchmark(args []string, stdout, stderr io.Writer) int {
 	}
 }
 
-func runBenchmarkPlan(args []string, stdout, stderr io.Writer) int {
+func runBenchmarkPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 || args[0] != "create" {
 		fmt.Fprintln(stderr, "usage: modelgauge benchmark plan create --node ID --model PATH --profile standard-cpu [options]")
 		return 2
@@ -254,6 +272,7 @@ func runBenchmarkPlan(args []string, stdout, stderr io.Writer) int {
 	contextsText := flags.String("contexts", "512,4096,8192", "comma-separated prompt contexts")
 	warmups := flags.Int("warmups", 3, "warm-up repetitions per case")
 	repetitions := flags.Int("repetitions", 5, "measured repetitions per case")
+	overwrite := flags.Bool("overwrite", false, "replace an existing generated plan")
 	output := flags.String("output", "", "plan output path")
 	if err := flags.Parse(args[1:]); err != nil {
 		return flagExitCode(err)
@@ -276,7 +295,7 @@ func runBenchmarkPlan(args []string, stdout, stderr io.Writer) int {
 		fmt.Fprintf(stderr, "--contexts: %v\n", err)
 		return 2
 	}
-	plan, err := profile.StandardCPUPlan(profile.Options{NodeID: *nodeID, ExecutionMode: protocol.ExecutionMode(*mode), ModelPath: *modelPath, ModelID: *modelID, Binary: *binary, Threads: threads, Contexts: contexts, Warmups: *warmups, Repetitions: *repetitions})
+	plan, err := profile.StandardCPUPlanContext(ctx, profile.Options{NodeID: *nodeID, ExecutionMode: protocol.ExecutionMode(*mode), ModelPath: *modelPath, ModelID: *modelID, Binary: *binary, Threads: threads, Contexts: contexts, Warmups: *warmups, Repetitions: *repetitions})
 	if err != nil {
 		fmt.Fprintf(stderr, "create plan: %v\n", err)
 		return 1
@@ -288,14 +307,21 @@ func runBenchmarkPlan(args []string, stdout, stderr io.Writer) int {
 	if *output == "" {
 		*output = filepath.Base(plan.Model.ID) + "-" + *profileName + ".json"
 	}
-	file, err := os.OpenFile(*output, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
-	if err != nil {
-		fmt.Fprintf(stderr, "create plan file: %v\n", err)
+	if err := ctx.Err(); err != nil {
+		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	defer file.Close()
-	if code := writeJSON(file, plan); code != 0 {
-		return code
+	writePlan := platform.WriteJSONNew
+	if *overwrite {
+		if info, e := os.Lstat(*output); e == nil && !info.Mode().IsRegular() {
+			fmt.Fprintln(stderr, "refusing to replace a non-regular plan path")
+			return 1
+		}
+		writePlan = platform.WriteJSON
+	}
+	if err := writePlan(*output, plan, 0600); err != nil {
+		fmt.Fprintf(stderr, "create plan file: %v\n", err)
+		return 1
 	}
 	fmt.Fprintf(stdout, "✅ Created %s\n", *output)
 	return 0
@@ -339,9 +365,9 @@ func loadPlan(path string, stderr io.Writer) (protocol.Plan, bool) {
 	return plan, true
 }
 
-func runNode(args []string, stdout, stderr io.Writer) int {
+func runNode(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) > 0 && args[0] != "inspect" {
-		return runNodeManagement(args, stdout, stderr)
+		return runNodeManagement(ctx, args, stdout, stderr)
 	}
 	if len(args) != 1 || args[0] != "inspect" {
 		fmt.Fprintln(stderr, "usage: modelgauge node inspect")
@@ -421,4 +447,112 @@ Use 'modelgauge help benchmark' for examples and '<command> --help' for flags.
 Read README.md and docs/CLI.md for the complete workflow.
 JSON responses and plain version output remain suitable for scripts.
 `)
+}
+
+// Run is retained for embedded callers; the executable supplies signal handling.
+func Run(args []string, out, stderr io.Writer) int {
+	return RunContext(context.Background(), args, out, stderr)
+}
+func RunWithSignals(args []string, out, stderr io.Writer) int {
+	ctx, cancel := context.WithCancelCause(context.Background())
+	defer cancel(nil)
+	signals := make(chan os.Signal, 2)
+	signal.Notify(signals, os.Interrupt, syscall.SIGTERM, syscall.SIGHUP)
+	defer signal.Stop(signals)
+	done := make(chan struct{})
+	defer close(done)
+	go func() {
+		select {
+		case s := <-signals:
+			if len(args) > 0 && (args[0] == "server" || (args[0] == "agent" && len(args) > 1 && args[1] == "run")) {
+				_ = json.NewEncoder(stderr).Encode(map[string]string{"level": "INFO", "msg": "shutdown requested; stopping owned work"})
+			} else {
+				fmt.Fprintln(stderr, "Stopping owned work; recovery may take a moment. Interrupt again to stop waiting.")
+			}
+			cancel(signalFailure{signal: s})
+			select {
+			case <-signals:
+				os.Exit(130)
+			case <-done:
+			}
+		case <-done:
+		}
+	}()
+	return RunContext(ctx, args, out, stderr)
+}
+func RunContext(ctx context.Context, args []string, out, stderr io.Writer) int {
+	if len(args) > 0 && args[0] == "_guest" {
+		return dispatch(ctx, args, out, stderr)
+	}
+	if handled, code := showRequestedHelp(args, out); handled {
+		return code
+	}
+	loadControlEnvironment()
+	errors := &redactedErrors{target: stderr, secrets: secretValues(args)}
+	code := dispatch(ctx, args, out, errors)
+	if ctx.Err() != nil && code != 0 {
+		return interruptionExit(ctx)
+	}
+	return code
+}
+
+type redactedErrors struct {
+	target  io.Writer
+	secrets []string
+}
+
+var urlUserInfo = regexp.MustCompile(`(https?://)[^/\s@]+@`)
+var urlQuery = regexp.MustCompile(`(https?://[^\s?]+)\?[^\s]+`)
+
+func (d *redactedErrors) Write(p []byte) (int, error) {
+	s := string(p)
+	for _, secret := range d.secrets {
+		if secret != "" {
+			s = strings.ReplaceAll(s, secret, "[REDACTED]")
+		}
+	}
+	s = urlUserInfo.ReplaceAllString(s, "$1[REDACTED]@")
+	s = urlQuery.ReplaceAllString(s, "$1?[REDACTED]")
+	_, err := io.WriteString(d.target, s)
+	return len(p), err
+}
+func secretValues(args []string) []string {
+	var values []string
+	for _, entry := range os.Environ() {
+		k, v, _ := strings.Cut(entry, "=")
+		if strings.Contains(k, "TOKEN") || strings.Contains(k, "PASSWORD") {
+			values = append(values, v)
+		}
+	}
+	for i, arg := range args {
+		if arg == "--token" || arg == "--admin-token" {
+			if i+1 < len(args) {
+				values = append(values, args[i+1])
+			}
+		}
+		for _, prefix := range []string{"--token=", "--admin-token="} {
+			if strings.HasPrefix(arg, prefix) {
+				values = append(values, strings.TrimPrefix(arg, prefix))
+			}
+		}
+	}
+	return values
+}
+
+type signalFailure struct{ signal os.Signal }
+
+func (e signalFailure) Error() string { return fmt.Sprintf("received %s", e.signal) }
+func interruptionExit(ctx context.Context) int {
+	if failure, ok := context.Cause(ctx).(signalFailure); ok {
+		if failure.signal == syscall.SIGTERM {
+			return 143
+		}
+		if failure.signal == syscall.SIGHUP {
+			return 129
+		}
+	}
+	if ctx.Err() == context.DeadlineExceeded {
+		return 124
+	}
+	return 130
 }

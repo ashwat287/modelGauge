@@ -2,6 +2,7 @@ package cli
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"strings"
 	"testing"
@@ -45,7 +46,7 @@ func TestMachineReadableOutputHasNoDecoration(t *testing.T) {
 
 func TestInvalidFlagIsStillUsageError(t *testing.T) {
 	var out, stderr bytes.Buffer
-	if code := Run([]string{"benchmark", "run", "--unknown-option"}, &out, &stderr); code != 2 {
+	if code := RunContext(context.Background(), []string{"benchmark", "run", "--unknown-option"}, &out, &stderr); code != 2 {
 		t.Fatalf("invalid flag returned %d", code)
 	}
 }

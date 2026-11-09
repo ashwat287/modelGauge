@@ -6,15 +6,13 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/nerdylucifer/modelgauge/internal/controller"
 	"github.com/nerdylucifer/modelgauge/internal/server"
 )
 
-func runServer(args []string, stdout, stderr interface{ Write([]byte) (int, error) }) int {
+func runServer(ctx context.Context, args []string, stdout, stderr interface{ Write([]byte) (int, error) }) int {
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	setFlagOutput(flags, stderr)
 	listenAddress := flags.String("listen", ":8080", "HTTP listen address")
@@ -34,8 +32,6 @@ func runServer(args []string, stdout, stderr interface{ Write([]byte) (int, erro
 		return 2
 	}
 
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	store, err := controller.Open(ctx, databaseURL)
 	if err != nil {
 		fmt.Fprintf(stderr, "open controller store: %v\n", err)

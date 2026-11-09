@@ -5,31 +5,29 @@ import (
 	"flag"
 	"fmt"
 	"os"
-	"os/signal"
-	"syscall"
 	"time"
 
 	"github.com/nerdylucifer/modelgauge/internal/agent"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
-func runAgent(args []string, stdout, stderr interface{ Write([]byte) (int, error) }) int {
+func runAgent(ctx context.Context, args []string, stdout, stderr interface{ Write([]byte) (int, error) }) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: modelgauge agent <run|install|status|uninstall>")
 		return 2
 	}
 	switch args[0] {
 	case "install":
-		return installAgent(args[1:], stdout, stderr)
+		return installAgent(ctx, args[1:], stdout, stderr)
 	case "status":
-		status, err := agent.Status()
+		status, err := agent.StatusContext(ctx)
 		if err != nil {
 			fmt.Fprintf(stderr, "agent status: %v\n", err)
 			return 1
 		}
 		return writeJSON(stdout, status)
 	case "uninstall":
-		if err := agent.Uninstall(); err != nil {
+		if err := agent.UninstallContext(ctx); err != nil {
 			fmt.Fprintf(stderr, "uninstall agent: %v\n", err)
 			return 1
 		}
@@ -56,8 +54,6 @@ func runAgent(args []string, stdout, stderr interface{ Write([]byte) (int, error
 		fmt.Fprintf(stderr, "create result directory: %v\n", err)
 		return 1
 	}
-	ctx, stop := signal.NotifyContext(context.Background(), os.Interrupt, syscall.SIGTERM)
-	defer stop()
 	fmt.Fprintf(stdout, "modelgauge agent polling %s as %s\n", config.ControllerURL, config.NodeID)
 	if err := agent.Run(ctx, config, *once, *interval); err != nil {
 		fmt.Fprintf(stderr, "agent: %v\n", err)
@@ -66,7 +62,7 @@ func runAgent(args []string, stdout, stderr interface{ Write([]byte) (int, error
 	return 0
 }
 
-func installAgent(args []string, stdout, stderr interface{ Write([]byte) (int, error) }) int {
+func installAgent(ctx context.Context, args []string, stdout, stderr interface{ Write([]byte) (int, error) }) int {
 	flags := flag.NewFlagSet("agent install", flag.ContinueOnError)
 	setFlagOutput(flags, stderr)
 	controllerURL := flags.String("controller", "", "controller URL")
@@ -103,7 +99,7 @@ func installAgent(args []string, stdout, stderr interface{ Write([]byte) (int, e
 		fmt.Fprintf(stderr, "agent configuration: %v\n", err)
 		return 2
 	}
-	status, err := agent.Install(agent.InstallOptions{Config: config, Interval: interval.String()})
+	status, err := agent.InstallContext(ctx, agent.InstallOptions{Config: config, Interval: interval.String()})
 	if err != nil {
 		fmt.Fprintf(stderr, "install agent: %v\n", err)
 		return 1

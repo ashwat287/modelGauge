@@ -7,6 +7,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -70,7 +71,7 @@ func RunWithOptions(ctx context.Context, plan protocol.Plan, options Options) (p
 	if err != nil {
 		return protocol.Result{}, "", err
 	}
-	if err := verifyModel(plan.Model); err != nil {
+	if err := verifyModelContext(ctx, plan.Model); err != nil {
 		return protocol.Result{}, "", err
 	}
 
@@ -105,7 +106,7 @@ func RunWithOptions(ctx context.Context, plan protocol.Plan, options Options) (p
 			}
 		}
 	}
-	binaryHash, err := sha256File(binary)
+	binaryHash, err := sha256FileContext(ctx, binary)
 	if err != nil {
 		return protocol.Result{}, outputDir, err
 	}
@@ -232,7 +233,7 @@ func runLlamaBench(ctx context.Context, binary string, plan protocol.Plan, threa
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
 	if err := cmd.Run(); err != nil {
-		return fmt.Errorf("llama-bench: %w: %s", err, strings.TrimSpace(stderr.String()))
+		return fmt.Errorf("llama-bench: %w: %s", errors.Join(err, ctx.Err()), strings.TrimSpace(stderr.String()))
 	}
 	return nil
 }
@@ -322,14 +323,15 @@ func resolveBinary(configured string) (string, error) {
 	return binary, nil
 }
 
-func verifyModel(model protocol.Model) error {
+func verifyModel(model protocol.Model) error { return verifyModelContext(context.Background(), model) }
+func verifyModelContext(ctx context.Context, model protocol.Model) error {
 	if _, err := os.Stat(model.Path); err != nil {
 		return fmt.Errorf("model %q: %w", model.Path, err)
 	}
 	if model.SHA256 == "" {
 		return nil
 	}
-	digest, err := sha256File(model.Path)
+	digest, err := sha256FileContext(ctx, model.Path)
 	if err != nil {
 		return err
 	}
@@ -394,14 +396,15 @@ func writeJSON(path string, value any) error {
 	return platform.WriteJSON(path, value, 0640)
 }
 
-func sha256File(path string) (string, error) {
+func sha256File(path string) (string, error) { return sha256FileContext(context.Background(), path) }
+func sha256FileContext(ctx context.Context, path string) (string, error) {
 	file, err := os.Open(path)
 	if err != nil {
 		return "", err
 	}
 	defer file.Close()
 	hash := sha256.New()
-	if _, err := io.Copy(hash, file); err != nil {
+	if _, err := io.Copy(hash, contextReader{ctx, file}); err != nil {
 		return "", err
 	}
 	return hex.EncodeToString(hash.Sum(nil)), nil
@@ -432,4 +435,16 @@ func collectArtifacts(root string) ([]protocol.Artifact, error) {
 	}
 	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Name < artifacts[j].Name })
 	return artifacts, nil
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }

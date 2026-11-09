@@ -16,7 +16,7 @@ type exportQueries []string
 
 func (q *exportQueries) String() string         { return fmt.Sprint([]string(*q)) }
 func (q *exportQueries) Set(value string) error { *q = append(*q, value); return nil }
-func runExport(args []string, out, stderr io.Writer) int {
+func runExport(ctx context.Context, args []string, out, stderr io.Writer) int {
 	f := flag.NewFlagSet("export", flag.ContinueOnError)
 	setFlagOutput(f, stderr)
 	node := f.String("node", "", "node ID to export")
@@ -63,8 +63,9 @@ func runExport(args []string, out, stderr io.Writer) int {
 	} else if *rawFrom != "" {
 		options.RawSource = exporter.LocalEvidence(*rawFrom)
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Minute)
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Minute)
 	defer cancel()
+
 	manifest, err := exporter.Write(ctx, options)
 	if err != nil {
 		fmt.Fprintf(stderr, "export failed (any created output remains marked INCOMPLETE): %v\n", err)

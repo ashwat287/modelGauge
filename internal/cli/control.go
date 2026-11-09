@@ -17,14 +17,14 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/releases"
 )
 
-func runControl(args []string, out, stderr io.Writer) int {
+func runControl(ctx context.Context, args []string, out, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: modelgauge control <bootstrap|status>")
 		return 2
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Minute)
-	defer cancel()
 	if args[0] == "status" {
+		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
+		defer cancel()
 		c, err := control.Load()
 		if err != nil {
 			fmt.Fprintf(stderr, "load control configuration: %v\n", err)
@@ -42,6 +42,8 @@ func runControl(args []string, out, stderr io.Writer) int {
 	}
 	f := flag.NewFlagSet("control bootstrap", flag.ContinueOnError)
 	setFlagOutput(f, stderr)
+	timeout := f.Duration("timeout", 60*time.Minute, "overall bootstrap deadline")
+	readiness := f.Duration("readiness-timeout", 10*time.Minute, "per-deployment readiness deadline")
 	provider := f.String("provider", "lima", "control provider")
 	defaultName, defaultPort := "modelgauge-control", 18080
 	if saved, err := control.Load(); err == nil {
@@ -65,6 +67,12 @@ func runControl(args []string, out, stderr io.Writer) int {
 	if err := f.Parse(args[1:]); err != nil {
 		return flagExitCode(err)
 	}
+	if *timeout <= 0 || *readiness < time.Second {
+		fmt.Fprintln(stderr, "timeouts must be positive (readiness at least one second)")
+		return 2
+	}
+	ctx, cancel := context.WithTimeout(ctx, *timeout)
+	defer cancel()
 	if *provider != "lima" {
 		fmt.Fprintln(stderr, "only the lima provider is supported")
 		return 2
@@ -88,7 +96,7 @@ func runControl(args []string, out, stderr io.Writer) int {
 			return 2
 		}
 	}
-	c, err := control.Bootstrap(ctx, control.Options{Name: *name, Image: *image, Source: *source, HelperBinary: *helper, K3sVersion: *version, CPUs: *cpus, MemoryGiB: *memory, DiskGiB: *disk, Port: *port, BenchmarkTarget: *benchmark, Log: out})
+	c, err := control.Bootstrap(ctx, control.Options{ReadinessTimeout: *readiness, Name: *name, Image: *image, Source: *source, HelperBinary: *helper, K3sVersion: *version, CPUs: *cpus, MemoryGiB: *memory, DiskGiB: *disk, Port: *port, BenchmarkTarget: *benchmark, Log: stderr})
 	if err != nil {
 		fmt.Fprintf(stderr, "bootstrap: %v\n", err)
 		return 1
@@ -97,7 +105,7 @@ func runControl(args []string, out, stderr io.Writer) int {
 	return 0
 }
 
-func runMonitoring(args []string, out, stderr io.Writer) int {
+func runMonitoring(ctx context.Context, args []string, out, stderr io.Writer) int {
 	if len(args) != 1 || args[0] != "open" {
 		fmt.Fprintln(stderr, "usage: modelgauge monitoring open")
 		return 2
@@ -107,7 +115,7 @@ func runMonitoring(args []string, out, stderr io.Writer) int {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
-	ctx, cancel := context.WithTimeout(context.Background(), 45*time.Second)
+	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
 	if err = control.Forward(ctx, c.VM, "monitoring", "grafana", 3000, 3000, "/api/health"); err != nil {
 		fmt.Fprintln(stderr, err)

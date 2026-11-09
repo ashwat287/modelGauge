@@ -13,6 +13,7 @@ import (
 	"strings"
 
 	"github.com/nerdylucifer/modelgauge/internal/guest"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
 )
 
 func helperPath(v ownedVM) string  { return filepath.Join(v.Dir, ".modelgauge-helper-"+v.ID) }
@@ -106,7 +107,7 @@ func (m *ownershipManager) removeHelper(v ownedVM) error {
 // The fixed tar member names never come from user input. The trap removes only
 // those two files and the directory this invocation created.
 func helperInvocation(v ownedVM, operation string, payload, binary []byte) ([]string, []byte, error) {
-	if operation != "prepare" && v.Prepared && !v.Cleaned {
+	if operation != "prepare" && operation != "bootstrap-prepare" && operation != "inspect-cleanup" && v.Prepared && !v.Cleaned {
 		script := `set -eu
 helper="$HOME/` + guest.HelperRelative + `"
 for directory in "$HOME/.local" "$HOME/.local/share" "$HOME/.local/share/modelgauge"; do
@@ -168,5 +169,46 @@ func managedBinary(ctx context.Context, name, arch string) ([]byte, error) {
 }
 
 func ownershipPayload(v ownedVM, operation string, files []string) ([]byte, error) {
-	return json.Marshal(guest.Request{ID: v.ID, Role: v.Role, Operation: operation, Files: files, Cleaned: v.Cleaned, Prepared: v.Prepared, Unprepared: !v.Prepared, MachineID: v.MachineID})
+	checkIdle := operation == "bootstrap-prepare"
+	if operation == "inspect-cleanup" {
+		operation = "inspect"
+	}
+	if checkIdle {
+		operation = "prepare"
+	}
+	return json.Marshal(guest.Request{CheckIdle: checkIdle, ID: v.ID, Role: v.Role, Operation: operation, Files: files, Cleaned: v.Cleaned, Prepared: v.Prepared, Unprepared: !v.Prepared, MachineID: v.MachineID})
+}
+
+// Failed preparation must not replace a working cache when the guest still uses
+// the previously verified helper. A newly installed helper remains checkpointed.
+func (m *ownershipManager) restorePreviousHelper(ctx context.Context, prior ownedVM, data []byte) error {
+	script := `set -eu
+for path in "$HOME/.local" "$HOME/.local/share" "$HOME/.local/share/modelgauge" "$HOME/.local/share/modelgauge/guest-helper"; do test ! -L "$path"; done
+sha256sum "$HOME/.local/share/modelgauge/guest-helper"
+`
+	raw, err := m.run(ctx, []string{"shell", "--workdir", "/", prior.Name, "--", "sh", "-c", script}, nil)
+	if err != nil {
+		return fmt.Errorf("could not reconcile guest helper after failed preparation: %w", err)
+	}
+	fields := strings.Fields(string(raw))
+	if len(fields) == 0 {
+		return fmt.Errorf("guest helper checksum unavailable")
+	}
+	if fields[0] != prior.HelperSHA256 {
+		return nil
+	}
+	if err = platform.WriteFile(helperPath(prior), data, 0600); err != nil {
+		return err
+	}
+	registry, err := m.load()
+	if err != nil {
+		return err
+	}
+	for i := range registry.VMs {
+		if registry.VMs[i].ID == prior.ID {
+			registry.VMs[i].HelperSHA256 = prior.HelperSHA256
+			registry.VMs[i].HelperArch = prior.HelperArch
+		}
+	}
+	return m.save(registry)
 }

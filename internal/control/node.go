@@ -4,11 +4,12 @@ import (
 	"bytes"
 	"context"
 	"debug/elf"
+	"errors"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
 	"net/url"
 	"os"
-	"os/exec"
 	"path/filepath"
 	"regexp"
 	"runtime"
@@ -69,15 +70,12 @@ func BootstrapNode(ctx context.Context, c Config, o NodeOptions) (resultErr erro
 		endpoint.Host = "host.lima.internal:" + endpoint.Port()
 		guestURL = endpoint.String()
 	}
+
 	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "benchmark", o.CPUs, o.MemoryGiB, o.DiskGiB, 0, o.Log, o)
 	if err != nil {
 		return err
 	}
-	defer func() {
-		if err := finishOwnership(); err != nil && resultErr == nil {
-			resultErr = err
-		}
-	}()
+	defer completeProvision(ctx, finishOwnership, &resultErr)
 	preflight := `set -euo pipefail
 if command -v k3s >/dev/null; then echo 'Refusing a benchmark VM with k3s installed'; exit 1; fi
 if pgrep -x llama-bench >/dev/null; then echo 'A benchmark is active; retry after it completes'; exit 1; fi
@@ -86,15 +84,33 @@ curl -fsS --connect-timeout 5 --max-time 15 ` + quote(guestURL+"/healthz") + ` >
 	if err = shell(ctx, o.Name, preflight, nil, o.Log); err != nil {
 		return err
 	}
-	// Stop the idle agent while building so it cannot lease a job mid-upgrade.
-	if err = shell(ctx, o.Name, `systemctl --user stop modelgauge-agent.service 2>/dev/null || true`, nil, o.Log); err != nil {
+	// Preserve prior service state and never interrupt a pending job to upgrade.
+	previousAgent, err := capture(ctx, o.Name, `if systemctl --user is-active --quiet modelgauge-agent.service; then printf active; else printf inactive; fi`)
+	if err != nil {
 		return err
 	}
-	// Restore the prior agent after an unsuccessful upgrade when one existed.
+	if err = shell(ctx, o.Name, `set -euo pipefail
+if [ -f "$HOME/.local/share/modelgauge/results/.pending.json" ]; then echo 'Pending agent work must finish or recover before upgrade' >&2; exit 1; fi
+state=$(systemctl --user show modelgauge-agent.service -p LoadState --value 2>/dev/null || true)
+case "$state" in
+ loaded) systemctl --user stop modelgauge-agent.service ;;
+ not-found) ;;
+ *) echo 'Cannot verify prior agent state' >&2; exit 1 ;;
+esac
+`, nil, o.Log); err != nil {
+		return err
+	}
 	defer func() {
-		recovery, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		if resultErr == nil || previousAgent != "active" {
+			return
+		}
+		session, _ := ctx.Value(bootstrapKey{}).(*bootstrapSession)
+		if session != nil && session.newVM {
+			return
+		}
+		recovery, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		_ = shell(recovery, o.Name, `if [ -f "$HOME/.config/systemd/user/modelgauge-agent.service" ]; then systemctl --user start modelgauge-agent; fi`, nil, io.Discard)
+		resultErr = errors.Join(resultErr, rawShell(recovery, o.Name, `systemctl --user start modelgauge-agent.service`, nil, io.Discard))
 	}()
 	if err = shell(ctx, o.Name, `set -euo pipefail
 sudo env DEBIAN_FRONTEND=noninteractive apt-get update
@@ -102,6 +118,7 @@ sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y git cmake build-essen
 `, nil, o.Log); err != nil {
 		return err
 	}
+
 	build := `set -euo pipefail
 revision=` + quote(o.Revision) + `
 base="$HOME/.local/share/modelgauge/runtime"
@@ -144,9 +161,10 @@ mkdir -p "$HOME/.local/bin" "$HOME/.local/share/modelgauge/models"
 	if err != nil {
 		return err
 	}
-	if err = shell(ctx, o.Name, `set -e; cat > "$HOME/.local/bin/modelgauge.new"; chmod 755 "$HOME/.local/bin/modelgauge.new"; mv "$HOME/.local/bin/modelgauge.new" "$HOME/.local/bin/modelgauge"`, bytes.NewReader(binary), o.Log); err != nil {
+	if err = shell(ctx, o.Name, `set -e; "$HOME/.local/share/modelgauge/guest-helper" _guest write-file .local/bin/modelgauge 755`, bytes.NewReader(binary), o.Log); err != nil {
 		return err
 	}
+
 	enrolledAfter := time.Now().UTC().Add(-5 * time.Second)
 	install := `set -euo pipefail
 IFS= read -r MODELGAUGE_AGENT_TOKEN
@@ -158,6 +176,7 @@ systemctl --user restart modelgauge-agent
 	if err = shell(ctx, o.Name, install, strings.NewReader(c.AgentToken+"\n"), o.Log); err != nil {
 		return err
 	}
+
 	api := &client.Client{BaseURL: c.ControllerURL, AdminToken: c.AdminToken}
 	for attempt := 0; attempt < 30; attempt++ {
 		var status struct {
@@ -232,7 +251,7 @@ func nodeBinary(ctx context.Context, o NodeOptions, arch string) ([]byte, error)
 	}
 	defer os.RemoveAll(directory)
 	path := filepath.Join(directory, "modelgauge")
-	cmd := exec.CommandContext(ctx, "go", "build", "-trimpath", "-o", path, "./cmd/modelgauge")
+	cmd := platform.CommandContext(ctx, "go", "build", "-trimpath", "-o", path, "./cmd/modelgauge")
 	cmd.Dir = o.Source
 	for _, value := range os.Environ() {
 		if !strings.HasPrefix(value, "GOOS=") && !strings.HasPrefix(value, "GOARCH=") && !strings.HasPrefix(value, "CGO_ENABLED=") {

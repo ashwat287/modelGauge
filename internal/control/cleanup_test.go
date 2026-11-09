@@ -92,6 +92,13 @@ func (f *fakeLima) run(ctx context.Context, args []string, input []byte) ([]byte
 		if args[5] == "cat" {
 			return []byte(g.machine + "\n"), nil
 		}
+		if args[5] == "sh" && strings.Contains(args[len(args)-1], "sha256sum") && !strings.Contains(args[len(args)-1], "_guest") {
+			data, err := os.ReadFile(filepath.Join(g.home, guest.HelperRelative))
+			if err != nil {
+				return nil, err
+			}
+			return []byte(helperSum(data) + "  helper\n"), nil
+		}
 		if args[5] == "uname" {
 			return []byte("aarch64\n"), nil
 		}
@@ -160,7 +167,7 @@ func prepareTestVM(t *testing.T, m *ownershipManager, f *fakeLima, name, role st
 		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
 			t.Fatal(err)
 		}
-		if err = os.WriteFile(path, []byte("owned content"), 0600); err != nil {
+		if err = testManagedWrite(g, relative, []byte("owned content")); err != nil {
 			t.Fatal(err)
 		}
 	}
@@ -363,7 +370,9 @@ func TestControlForwardOwnershipAndQueuedJobs(t *testing.T) {
 	for _, path := range registry.VMs[0].Files {
 		p := filepath.Join(g.home, path)
 		_ = os.MkdirAll(filepath.Dir(p), 0700)
-		_ = os.WriteFile(p, []byte("owned"), 0600)
+		if err := testManagedWrite(g, path, []byte("owned")); err != nil {
+			t.Fatal(err)
+		}
 	}
 	forwardFinish, err := reserveForward(ctx, "control", 3000)
 	if err != nil {
@@ -371,7 +380,9 @@ func TestControlForwardOwnershipAndQueuedJobs(t *testing.T) {
 		t.Fatal(err)
 	}
 	p := filepath.Join(g.home, ".config/systemd/user/modelgauge-forward-3000.service")
-	_ = os.WriteFile(p, []byte("owned forward"), 0600)
+	if err := testManagedWrite(g, ".config/systemd/user/modelgauge-forward-3000.service", []byte("owned forward")); err != nil {
+		t.Fatal(err)
+	}
 	if err = forwardFinish(); err != nil {
 		t.Fatal(err)
 	}
@@ -420,4 +431,9 @@ func decodeHelperEnvelope(input []byte) ([]byte, error) {
 			return io.ReadAll(reader)
 		}
 	}
+}
+
+func testManagedWrite(g *fakeGuest, path string, data []byte) error {
+	r := guest.Runtime{Home: g.home, MachineID: g.machine, MountPoints: func() ([]string, error) { return nil, nil }}
+	return r.WriteManaged(context.Background(), path, 0600, bytes.NewReader(data))
 }

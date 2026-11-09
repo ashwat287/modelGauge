@@ -89,6 +89,9 @@ func copyVerified(destination, relative string, source io.Reader, size int64, ex
 	return nil
 }
 func CopyLocal(source, destination string, refs []protocol.EvidenceRef) error {
+	return CopyLocalContext(context.Background(), source, destination, refs)
+}
+func CopyLocalContext(ctx context.Context, source, destination string, refs []protocol.EvidenceRef) error {
 	var total int64
 	for _, ref := range refs {
 		relative, err := Relative(ref)
@@ -113,7 +116,7 @@ func CopyLocal(source, destination string, refs []protocol.EvidenceRef) error {
 			file.Close()
 			return fmt.Errorf("raw evidence exceeds total size limit")
 		}
-		err = copyVerified(destination, relative, file, info.Size(), ref.SHA256)
+		err = copyVerified(destination, relative, contextReader{ctx, file}, info.Size(), ref.SHA256)
 		file.Close()
 		if err != nil {
 			return err
@@ -122,6 +125,10 @@ func CopyLocal(source, destination string, refs []protocol.EvidenceRef) error {
 	return nil
 }
 func ReceiveArchive(source io.Reader, destination string, refs []protocol.EvidenceRef) error {
+	return ReceiveArchiveContext(context.Background(), source, destination, refs)
+}
+func ReceiveArchiveContext(ctx context.Context, source io.Reader, destination string, refs []protocol.EvidenceRef) error {
+	source = contextReader{ctx, source}
 	expected := map[string]string{}
 	for _, ref := range refs {
 		relative, err := Relative(ref)
@@ -201,7 +208,7 @@ func WriteArchive(ctx context.Context, source string, refs []protocol.EvidenceRe
 			return fmt.Errorf("evidence size limit exceeded")
 		}
 		hash := sha256.New()
-		if _, err = io.Copy(hash, file); err != nil {
+		if _, err = io.Copy(hash, contextReader{ctx, file}); err != nil {
 			file.Close()
 			return err
 		}
@@ -217,11 +224,23 @@ func WriteArchive(ctx context.Context, source string, refs []protocol.EvidenceRe
 			file.Close()
 			return err
 		}
-		_, err = io.Copy(writer, file)
+		_, err = io.Copy(writer, contextReader{ctx, file})
 		file.Close()
 		if err != nil {
 			return err
 		}
 	}
 	return writer.Close()
+}
+
+type contextReader struct {
+	ctx    context.Context
+	reader io.Reader
+}
+
+func (r contextReader) Read(p []byte) (int, error) {
+	if err := r.ctx.Err(); err != nil {
+		return 0, err
+	}
+	return r.reader.Read(p)
 }

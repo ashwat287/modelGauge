@@ -1,6 +1,7 @@
 package modelcache
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
@@ -23,9 +24,14 @@ type CatalogEntry struct {
 	URL          string `json:"url"`
 }
 
-func Search(query string) ([]CatalogEntry, error) {
+func Search(query string) ([]CatalogEntry, error) { return SearchContext(context.Background(), query) }
+func SearchContext(ctx context.Context, query string) ([]CatalogEntry, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
-	response, err := client.Get("https://huggingface.co/api/models/" + catalogRepository + "?blobs=true")
+	request, err := http.NewRequestWithContext(ctx, "GET", "https://huggingface.co/api/models/"+catalogRepository+"?blobs=true", nil)
+	if err != nil {
+		return nil, err
+	}
+	response, err := client.Do(request)
 	if err != nil {
 		return nil, err
 	}
@@ -62,8 +68,9 @@ func Search(query string) ([]CatalogEntry, error) {
 	return entries, nil
 }
 
-func Resolve(id string) (CatalogEntry, error) {
-	entries, err := Search(id)
+func Resolve(id string) (CatalogEntry, error) { return ResolveContext(context.Background(), id) }
+func ResolveContext(ctx context.Context, id string) (CatalogEntry, error) {
+	entries, err := SearchContext(ctx, id)
 	if err != nil {
 		return CatalogEntry{}, err
 	}
