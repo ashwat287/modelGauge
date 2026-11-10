@@ -127,7 +127,7 @@ func RunOnce(ctx context.Context, config Config) (bool, error) {
 		busy.Store(true)
 		return true, processPending(ctx, api, config, pending)
 	}
-	models, err := modelcache.Discover()
+	models, err := modelcache.DiscoverContext(ctx)
 	if err != nil {
 		return false, fmt.Errorf("discover models: %w", err)
 	}

@@ -3,7 +3,11 @@ package controller
 import (
 	"context"
 	"fmt"
+
 	"strings"
+
+	"github.com/nerdylucifer/modelgauge/internal/benchmark"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 // Metrics exports database-backed gauges. Run IDs and artifact names never
@@ -96,6 +100,31 @@ func (s *Store) Metrics(ctx context.Context) (string, error) {
 		}
 		labels := fmt.Sprintf("node=%q,mode=%q,model=%q,workload=%q", node, mode, model, workload)
 		fmt.Fprintf(&out, "modelgauge_peak_rss_bytes{%s} %d\nmodelgauge_memory_reservation_bytes{%s} %d\n", labels, rss, labels, reservation)
+	}
+	err = rows.Err()
+	rows.Close()
+	if err != nil {
+		return "", err
+	}
+	rows, err = s.pool.Query(ctx, `SELECT DISTINCT ON (r.node_id,r.execution_mode,p.specification #>> '{model,id}',COALESCE(p.specification #>> '{benchmark,kind}',CASE WHEN p.specification ? 'serving' THEN 'serving' ELSE 'llama.cpp' END)) r.node_id,r.execution_mode,p.specification #>> '{model,id}',COALESCE(r.runtime_metadata->>'benchmark',''),COALESCE(r.runtime_metadata->>'serving','') FROM benchmark_runs r JOIN benchmark_plans p USING(plan_id) WHERE r.status='completed' AND (r.runtime_metadata ? 'benchmark' OR r.runtime_metadata ? 'serving') ORDER BY r.node_id,r.execution_mode,p.specification #>> '{model,id}',COALESCE(p.specification #>> '{benchmark,kind}',CASE WHEN p.specification ? 'serving' THEN 'serving' ELSE 'llama.cpp' END),r.completed_at DESC`)
+	if err != nil {
+		return "", err
+	}
+	for rows.Next() {
+		var node, mode, model, raw, legacy string
+		if err = rows.Scan(&node, &mode, &model, &raw, &legacy); err != nil {
+			rows.Close()
+			return "", err
+		}
+		report, err := protocol.DecodeStoredReport(raw, legacy)
+		if err != nil {
+			rows.Close()
+			return "", err
+		}
+		if err := benchmark.WriteMetrics(&out, node, mode, model, report); err != nil {
+			rows.Close()
+			return "", err
+		}
 	}
 	err = rows.Err()
 	rows.Close()

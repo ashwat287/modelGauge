@@ -85,7 +85,7 @@ func (q *singleConnection) Query(_ context.Context, _ string, _ ...any) (pgx.Row
 	}
 	q.busy = true
 	q.queries++
-	values := []any{"run", "plan", "node", "model", "lima-linux", "completed", "2026-11-07T10:00:00Z", int64(100), int64(125), "", false}
+	values := []any{"run", "plan", "node", "model", "lima-linux", "completed", "2026-11-07T10:00:00Z", int64(100), int64(125), "", false, "", ""}
 	if q.queries > 1 {
 		values = []any{"case", 2, 32, 0, 5, float64(25), float64(.2)}
 	}
@@ -99,5 +99,31 @@ func TestExportResultQueriesDrainSingleConnection(t *testing.T) {
 	}
 	if len(results) != 1 || len(results[0].Cases) != 1 || q.busy {
 		t.Fatal("incomplete transaction result")
+	}
+}
+
+func TestSelectedRunExportExcludesOtherHistory(t *testing.T) {
+	s := testStore(t)
+	ctx := context.Background()
+	for _, name := range []string{"selected", "other"} {
+		id := setupPlan(t, s, "run-export-node")
+		lease, err := s.LeasePlan(ctx, "run-export-node", JobTTL)
+		if err != nil {
+			t.Fatal(err)
+		}
+		if err := s.StartRun(ctx, "run-export-node", name, id, lease.LeaseToken, protocol.ExecutionModeLima, nil); err != nil {
+			t.Fatal(err)
+		}
+		result := protocol.Result{RunID: name, Status: protocol.RunStatusCompleted, Artifacts: []protocol.Artifact{{Name: "case.json", SHA256: strings.Repeat("a", 64)}}}
+		if err := s.CompleteRun(ctx, "run-export-node", id, lease.LeaseToken, result); err != nil {
+			t.Fatal(err)
+		}
+	}
+	snapshot, err := s.ExportNodeRun(ctx, "run-export-node", "selected")
+	if err != nil || snapshot.SelectedRun != "selected" || len(snapshot.Results) != 1 || snapshot.Results[0].RunID != "selected" || len(snapshot.Runs) != 1 || len(snapshot.Plans) != 1 || len(snapshot.Artifacts) != 1 || snapshot.Artifacts[0].RunID != "selected" {
+		t.Fatal(snapshot, err)
+	}
+	if _, err := s.ExportNodeRun(ctx, "run-export-node", "missing"); !errors.Is(err, ErrNotFound) {
+		t.Fatal(err)
 	}
 }

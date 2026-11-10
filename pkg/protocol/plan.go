@@ -20,15 +20,16 @@ const (
 
 // Plan describes one reproducible benchmark job.
 type Plan struct {
-	SchemaVersion string        `json:"schema_version"`
-	PlanID        string        `json:"plan_id,omitempty"`
-	NodeID        string        `json:"node_id"`
-	ExecutionMode ExecutionMode `json:"execution_mode"`
-	Runtime       Runtime       `json:"runtime"`
-	Model         Model         `json:"model"`
-	Defaults      Defaults      `json:"defaults"`
-	Cases         []Case        `json:"cases"`
-	MemoryCase    MemoryCase    `json:"memory_case"`
+	SchemaVersion string         `json:"schema_version"`
+	PlanID        string         `json:"plan_id,omitempty"`
+	NodeID        string         `json:"node_id"`
+	ExecutionMode ExecutionMode  `json:"execution_mode"`
+	Runtime       Runtime        `json:"runtime"`
+	Model         Model          `json:"model"`
+	Defaults      Defaults       `json:"defaults"`
+	Cases         []Case         `json:"cases"`
+	MemoryCase    MemoryCase     `json:"memory_case"`
+	Benchmark     *BenchmarkSpec `json:"benchmark,omitempty"`
 }
 
 type Runtime struct {
@@ -63,10 +64,9 @@ type MemoryCase struct {
 	GenerationTokens int    `json:"n_gen"`
 }
 
-// Validate checks the invariants required before a node accepts a plan.
+// Validate checks the transport envelope. Benchmark modules validate their workloads.
 func (p Plan) Validate() error {
 	var problems []error
-
 	if p.SchemaVersion != BenchmarkPlanV1 {
 		problems = append(problems, fmt.Errorf("schema_version must be %q", BenchmarkPlanV1))
 	}
@@ -76,55 +76,13 @@ func (p Plan) Validate() error {
 	if p.ExecutionMode != ExecutionModeNative && p.ExecutionMode != ExecutionModeLima {
 		problems = append(problems, errors.New("execution_mode must be native-isolated or lima-linux"))
 	}
-	if p.Runtime.Kind != "llama.cpp" {
-		problems = append(problems, errors.New("runtime.kind must be llama.cpp"))
-	}
 	if strings.TrimSpace(p.Model.ID) == "" {
 		problems = append(problems, errors.New("model.id is required"))
 	}
-	if strings.TrimSpace(p.Model.Path) == "" {
-		problems = append(problems, errors.New("model.path is required"))
+	if p.Benchmark != nil {
+		problems = append(problems, p.Benchmark.Validate())
 	}
-	if p.Defaults.WarmupRepetitions < 0 {
-		problems = append(problems, errors.New("warmup_repetitions cannot be negative"))
-	}
-	if p.Defaults.MeasureRepetitions < 1 {
-		problems = append(problems, errors.New("measure_repetitions must be at least one"))
-	}
-	if len(p.Cases) == 0 {
-		problems = append(problems, errors.New("at least one benchmark case is required"))
-	}
-
-	seen := make(map[string]struct{}, len(p.Cases))
-	for _, c := range p.Cases {
-		if err := validateCase(c.ID, c.Threads, c.PromptTokens, c.GenerationTokens); err != nil {
-			problems = append(problems, fmt.Errorf("case %q: %w", c.ID, err))
-		}
-		if _, exists := seen[c.ID]; exists {
-			problems = append(problems, fmt.Errorf("case %q is duplicated", c.ID))
-		}
-		seen[c.ID] = struct{}{}
-	}
-	if err := validateCase(p.MemoryCase.ID, p.MemoryCase.Threads, p.MemoryCase.PromptTokens, p.MemoryCase.GenerationTokens); err != nil {
-		problems = append(problems, fmt.Errorf("memory_case: %w", err))
-	}
-
 	return errors.Join(problems...)
-}
-
-func validateCase(id string, threads, prompt, generation int) error {
-	switch {
-	case strings.TrimSpace(id) == "":
-		return errors.New("id is required")
-	case threads < 1:
-		return errors.New("threads must be at least one")
-	case prompt < 0 || generation < 0:
-		return errors.New("token counts cannot be negative")
-	case prompt == 0 && generation == 0:
-		return errors.New("prompt and generation cannot both be zero")
-	default:
-		return nil
-	}
 }
 
 // ExamplePlan returns the smallest useful CPU-only llama.cpp plan.

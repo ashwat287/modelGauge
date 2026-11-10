@@ -49,10 +49,12 @@ func (c *Client) doJSON(ctx context.Context, method, path, tokenKind string, inp
 	case "admin":
 		request.Header.Set("X-ModelGauge-Admin-Token", c.AdminToken)
 	}
-	httpClient := c.HTTPClient
-	if httpClient == nil {
-		httpClient = &http.Client{Timeout: 30 * time.Second}
+	httpClient := &http.Client{Timeout: 30 * time.Second}
+	if c.HTTPClient != nil {
+		copied := *c.HTTPClient
+		httpClient = &copied
 	}
+	httpClient.CheckRedirect = func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }
 	response, err := httpClient.Do(request)
 	if err != nil {
 		return 0, err

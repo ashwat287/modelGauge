@@ -155,7 +155,7 @@ func runPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 			fmt.Fprintf(stderr, "decode plan: %v\n", err)
 			return 1
 		}
-		if err := plan.Validate(); err != nil {
+		if err := benchmark.ValidatePlan(plan); err != nil {
 			fmt.Fprintf(stderr, "invalid plan: %v\n", err)
 			return 1
 		}
@@ -173,6 +173,8 @@ func runBenchmark(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 2
 	}
 	switch args[0] {
+	case "serving":
+		return runServing(ctx, args[1:], stdout, stderr)
 	case "cancel":
 		return cancelJob(ctx, args[1:], stdout, stderr, false)
 	case "campaign":
@@ -300,7 +302,7 @@ func runBenchmarkPlan(ctx context.Context, args []string, stdout, stderr io.Writ
 		fmt.Fprintf(stderr, "create plan: %v\n", err)
 		return 1
 	}
-	if err := plan.Validate(); err != nil {
+	if err := benchmark.ValidatePlan(plan); err != nil {
 		fmt.Fprintf(stderr, "create plan: %v\n", err)
 		return 1
 	}
@@ -358,7 +360,7 @@ func loadPlan(path string, stderr io.Writer) (protocol.Plan, bool) {
 		fmt.Fprintf(stderr, "decode plan: %v\n", err)
 		return protocol.Plan{}, false
 	}
-	if err := plan.Validate(); err != nil {
+	if err := benchmark.ValidatePlan(plan); err != nil {
 		fmt.Fprintf(stderr, "invalid plan: %v\n", err)
 		return protocol.Plan{}, false
 	}
@@ -422,6 +424,9 @@ Usage: modelgauge <command> [options]
   benchmark plan create      Generate one plan using a model file
   benchmark submit --plan FILE  Queue a plan (JSON)
   benchmark run --plan FILE   Execute locally on Linux
+  benchmark serving plan     Plan benchmarks for an existing inference endpoint
+  benchmark serving run      Measure serving latency, load, quality and resources
+  benchmark serving report   Read a serving result as JSON or CSV
   benchmark cancel PLAN_ID   Cancel queued or active work (JSON)
   plan example               Print an editable plan template (JSON)
   plan validate FILE         Validate a plan without running it

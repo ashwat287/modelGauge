@@ -7,7 +7,9 @@ import (
 	"encoding/csv"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/benchmark"
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/controller"
 	"github.com/nerdylucifer/modelgauge/internal/evidence"
@@ -25,6 +27,7 @@ import (
 
 type Options struct {
 	NodeID, Output, ControllerURL, AdminToken string
+	RunID                                     string
 	PrometheusURL, PrometheusToken            string
 	Start, End                                time.Time
 	Step                                      time.Duration
@@ -44,6 +47,7 @@ type History struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 type Manifest struct {
+	SelectedRun        string     `json:"selected_run_id,omitempty"`
 	SchemaVersion      string     `json:"schema_version"`
 	NodeID             string     `json:"node_id"`
 	CreatedAt          time.Time  `json:"created_at"`
@@ -71,6 +75,9 @@ func endpoint(base, path string) (string, error) {
 	}
 	return strings.TrimRight(base, "/") + path, nil
 }
+
+var errResponseTooLarge = errors.New("export response exceeds size limit")
+
 func fetch(ctx context.Context, o Options, base, path, token, kind string, limit int64) ([]byte, error) {
 	address, err := endpoint(base, path)
 	if err != nil {
@@ -106,7 +113,7 @@ func fetch(ctx context.Context, o Options, base, path, token, kind string, limit
 		return nil, err
 	}
 	if int64(len(data)) > limit {
-		return nil, fmt.Errorf("export response exceeds size limit")
+		return nil, errResponseTooLarge
 	}
 	return data, nil
 }
@@ -167,8 +174,15 @@ func Write(ctx context.Context, o Options) (manifest Manifest, err error) {
 	if _, e := os.Lstat(o.Output); !os.IsNotExist(e) {
 		return manifest, fmt.Errorf("output must be a new directory; refusing to overwrite")
 	}
-	snapshotBytes, err := fetch(ctx, o, o.ControllerURL, "/v1/nodes/"+url.PathEscape(o.NodeID)+"/export", o.AdminToken, "admin", 64<<20)
+	snapshotPath := "/v1/nodes/" + url.PathEscape(o.NodeID) + "/export"
+	if o.RunID != "" {
+		snapshotPath += "?run=" + url.QueryEscape(o.RunID)
+	}
+	snapshotBytes, err := fetch(ctx, o, o.ControllerURL, snapshotPath, o.AdminToken, "admin", 64<<20)
 	if err != nil {
+		if errors.Is(err, errResponseTooLarge) && o.RunID == "" {
+			return manifest, fmt.Errorf("%w; use --run RUN_ID to export one experiment", err)
+		}
 		return manifest, err
 	}
 	var snapshot controller.NodeExport
@@ -180,6 +194,9 @@ func Write(ctx context.Context, o Options) (manifest Manifest, err error) {
 	}
 	if err = json.Unmarshal(snapshot.Node, &node); err != nil {
 		return manifest, err
+	}
+	if snapshot.SelectedRun != o.RunID {
+		return manifest, fmt.Errorf("controller did not honor selected run; update controller before exporting")
 	}
 	if snapshot.SchemaVersion != "modelgauge-node-export/v1" || node.ID != o.NodeID || snapshot.CapturedAt.IsZero() {
 		return manifest, fmt.Errorf("controller export schema/node identity mismatch")
@@ -202,7 +219,7 @@ func Write(ctx context.Context, o Options) (manifest Manifest, err error) {
 	if err = write(o.Output, "INCOMPLETE", []byte("Export did not complete. Do not delete source evidence based on this directory.\n")); err != nil {
 		return manifest, err
 	}
-	manifest = Manifest{SchemaVersion: "modelgauge-export/v1", NodeID: o.NodeID, CreatedAt: time.Now().UTC(), DatabaseCapturedAt: snapshot.CapturedAt, MetricsCapturedAt: time.Now().UTC(), ExporterVersion: buildinfo.Version, MetricsScope: "controller-wide latest gauges; not historical samples", Warnings: []string{}, Files: []File{}}
+	manifest = Manifest{SelectedRun: o.RunID, SchemaVersion: "modelgauge-export/v1", NodeID: o.NodeID, CreatedAt: time.Now().UTC(), DatabaseCapturedAt: snapshot.CapturedAt, MetricsCapturedAt: time.Now().UTC(), ExporterVersion: buildinfo.Version, MetricsScope: "controller-wide latest gauges; not historical samples", Warnings: []string{}, Files: []File{}}
 	for _, section := range []struct {
 		name  string
 		value any
@@ -222,6 +239,19 @@ func Write(ctx context.Context, o Options) (manifest Manifest, err error) {
 	}
 	if err = write(o.Output, "results.csv", []byte(csvData.String())); err != nil {
 		return manifest, err
+	}
+	var reports []protocol.Result
+	for _, r := range snapshot.Results {
+		reports = append(reports, protocol.Result{RunID: r.RunID, PlanID: r.PlanID, NodeID: r.NodeID, ExecutionMode: protocol.ExecutionMode(r.ExecutionMode), Status: protocol.RunStatus(r.Status), Benchmark: r.Benchmark})
+	}
+	reportFiles, err := benchmark.WriteReports(reports)
+	if err != nil {
+		return manifest, err
+	}
+	for name, data := range reportFiles {
+		if err = write(o.Output, name, data); err != nil {
+			return manifest, err
+		}
 	}
 	for _, p := range snapshot.Plans {
 		var plan struct {

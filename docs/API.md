@@ -33,7 +33,7 @@ Metrics use Prometheus text format; normal API bodies are JSON.
 | `POST` | `/v1/plans` | Queue a `benchmark-plan/v1` document |
 | `GET` | `/v1/plans/{planID}` | Plan state/specification |
 | `POST` | `/v1/plans/{planID}/cancel` | Cancel a benchmark |
-| `GET` | `/v1/nodes/{nodeID}/export` | Authenticated repeatable-read database snapshot for export (current source) |
+| `GET` | `/v1/nodes/{nodeID}/export` | Authenticated repeatable-read snapshot; optional `?run=RUN_ID` selects one run and its related records |
 | `GET` | `/v1/nodes/{nodeID}/results` | Normalized terminal results |
 | `GET` | `/v1/nodes/{nodeID}/recommendation` | Query parameters: `model`, `execution_mode`, `context`, `memory_budget_bytes` |
 
@@ -78,6 +78,19 @@ that recovery guarantee. See [recovery](operations/JOB-RECOVERY.md).
 
 - `benchmark-plan/v1`: node, execution mode, runtime, model identity, defaults, throughput cases and memory case.
 - `benchmark-result/v1`: run/plan/node identity, terminal state, cases, memory, runtime metadata and artifact hashes.
+
+Current-source plans may instead supply `benchmark: {"kind":"serving","config":{...}}`
+and `runtime.kind: "http"`; model paths and engine cases are then unnecessary.
+The benchmark module validates `config`. These plans still use the existing
+submission/lease/completion routes. Results carry
+`benchmark: {"kind":"serving","data":{...}}`, whose data has schema
+`modelgauge-serving/v1`; result queries and exports return it. Older top-level
+`serving` JSON is accepted on input. The report is persisted through existing JSON metadata, so
+there is no database schema/deployment migration. Update controller and agent
+application binaries together; v0.2.2 does not understand these optional fields.
+Inference endpoint credentials are environment-only on the executing client or
+agent and are not controller admission credentials. See the
+[serving benchmark methodology](BENCHMARKING.md#-benchmarks-against-an-existing-inference-endpoint).
 - `benchmark-campaign/v1`: local CLI manifest grouping generated plan files and submitted plan IDs.
 - `modelgauge-release/v1`: version/repository/commit, image digest and executable size/checksums.
 

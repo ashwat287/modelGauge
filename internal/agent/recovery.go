@@ -143,13 +143,7 @@ func processPending(ctx context.Context, api *client.Client, c Config, p *pendin
 					return err
 				}
 				_, _ = api.DoJSON(workCtx, "POST", root+"/heartbeat", "agent", heartbeatRequest{Status: "busy"}, nil)
-				if plan.Runtime.Binary == "" {
-					plan.Runtime.Binary, err = modelcache.DiscoverLlamaBench()
-				}
-				var result protocol.Result
-				if err == nil {
-					result, _, err = benchmark.RunWithOptions(workCtx, plan, benchmark.Options{RunID: "run-" + id, OutputDir: output, Resume: true})
-				}
+				result, _, err := benchmark.RunWithOptions(workCtx, plan, benchmark.Options{RunID: "run-" + id, OutputDir: output, Resume: true})
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -164,7 +158,11 @@ func processPending(ctx context.Context, api *client.Client, c Config, p *pendin
 						}
 					default:
 					}
-					result = protocol.Result{SchemaVersion: "benchmark-result/v1", RunID: "run-" + id, PlanID: id, NodeID: c.NodeID, ExecutionMode: plan.ExecutionMode, Status: state, InvalidReason: failure, StartedAt: time.Now().UTC(), CompletedAt: time.Now().UTC()}
+					if result.SchemaVersion != "" {
+						result.Status, result.InvalidReason = state, failure
+					} else {
+						result = protocol.Result{SchemaVersion: "benchmark-result/v1", RunID: "run-" + id, PlanID: id, NodeID: c.NodeID, ExecutionMode: plan.ExecutionMode, Status: state, InvalidReason: failure, StartedAt: time.Now().UTC(), CompletedAt: time.Now().UTC()}
+					}
 					if err = os.MkdirAll(output, 0750); err != nil {
 						return err
 					}
@@ -212,7 +210,7 @@ func retryJSON(ctx context.Context, api *client.Client, path string, payload any
 		if err == nil {
 			return nil
 		}
-		if status == 409 {
+		if status == 409 || status == 400 || status == 404 || status == 413 || status == 422 {
 			return fmt.Errorf("%w: %v", errRejected, err)
 		}
 		if status >= 400 && status < 500 && status != 408 && status != 429 {

@@ -18,6 +18,7 @@ func TestHelpWorksWithoutInfrastructure(t *testing.T) {
 		"benchmark campaign create --help", "benchmark campaign status --help",
 		"benchmark plan create --help", "benchmark run --help", "benchmark submit --help",
 		"benchmark cancel --help", "results show --help", "results recommend --help",
+		"benchmark serving --help", "benchmark serving plan --help", "benchmark serving run --help", "benchmark serving report --help",
 		"agent run --help", "agent install --help", "server --help", "monitoring --help",
 	} {
 		t.Run(command, func(t *testing.T) {

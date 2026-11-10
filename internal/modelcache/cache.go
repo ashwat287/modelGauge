@@ -28,15 +28,35 @@ func ManagedDir(home string) string {
 	return filepath.Join(home, ".local", "share", "modelgauge", "models")
 }
 
-func Discover() ([]Model, error) {
+type inventoryEntry struct {
+	Size     int64  `json:"size"`
+	Modified int64  `json:"modified_ns"`
+	SHA256   string `json:"sha256"`
+}
+
+func Discover() ([]Model, error) { return DiscoverContext(context.Background()) }
+
+func DiscoverContext(ctx context.Context) ([]Model, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
 		return nil, err
 	}
-	directories := []string{ManagedDir(home), filepath.Join(home, "models"), filepath.Join(home, "benchmark-work", "models")}
+	cachePath := filepath.Join(home, ".local", "share", "modelgauge", "model-inventory.json")
+	cached := map[string]inventoryEntry{}
+	if data, err := os.ReadFile(cachePath); err == nil {
+		_ = json.Unmarshal(data, &cached)
+	}
+	if cached == nil {
+		cached = map[string]inventoryEntry{}
+	}
+	next := map[string]inventoryEntry{}
 	seen := map[string]bool{}
 	models := []Model{}
-	for _, directory := range directories {
+	changed := false
+	for _, directory := range []string{ManagedDir(home), filepath.Join(home, "models"), filepath.Join(home, "benchmark-work", "models")} {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
 		entries, err := os.ReadDir(directory)
 		if os.IsNotExist(err) {
 			continue
@@ -45,27 +65,69 @@ func Discover() ([]Model, error) {
 			return nil, err
 		}
 		for _, entry := range entries {
-			if entry.IsDir() || !strings.EqualFold(filepath.Ext(entry.Name()), ".gguf") {
+			if err := ctx.Err(); err != nil {
+				return nil, err
+			}
+			if !strings.EqualFold(filepath.Ext(entry.Name()), ".gguf") {
+				continue
+			}
+			id := strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name()))
+			if seen[id] {
 				continue
 			}
 			path := filepath.Join(directory, entry.Name())
-			if seen[path] {
+			info, err := os.Stat(path)
+			if err != nil {
+				return nil, err
+			}
+			if !info.Mode().IsRegular() {
 				continue
 			}
-			seen[path] = true
-			info, err := entry.Info()
-			if err != nil {
-				return nil, err
+			seen[id] = true
+			fingerprint := inventoryEntry{Size: info.Size(), Modified: info.ModTime().UnixNano()}
+			prior, ok := cached[path]
+			if ok && prior.Size == fingerprint.Size && prior.Modified == fingerprint.Modified && validInventorySHA(prior.SHA256) {
+				fingerprint.SHA256 = prior.SHA256
+			} else {
+				fingerprint.SHA256, err = checksumContext(ctx, path)
+				if err != nil {
+					return nil, err
+				}
+				after, err := os.Stat(path)
+				if err != nil {
+					return nil, err
+				}
+				if !os.SameFile(info, after) || after.Size() != info.Size() || !after.ModTime().Equal(info.ModTime()) {
+					return nil, fmt.Errorf("model changed during inventory scan: %s", id)
+				}
+				changed = true
 			}
-			digest, err := checksum(path)
-			if err != nil {
-				return nil, err
-			}
-			models = append(models, Model{ID: strings.TrimSuffix(entry.Name(), filepath.Ext(entry.Name())), SHA256: digest, SizeBytes: info.Size(), Path: path})
+			next[path] = fingerprint
+			models = append(models, Model{ID: id, SHA256: fingerprint.SHA256, SizeBytes: info.Size(), Path: path})
+		}
+	}
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	if changed || len(next) != len(cached) {
+		if err := os.MkdirAll(filepath.Dir(cachePath), 0700); err != nil {
+			return nil, err
+		}
+		if err := platform.WriteJSON(cachePath, next, 0600); err != nil {
+			return nil, err
 		}
 	}
 	sort.Slice(models, func(i, j int) bool { return models[i].ID < models[j].ID })
 	return models, nil
+}
+
+// Inventory fingerprints avoid repeated scans; execution still verifies the full model checksum.
+func validInventorySHA(value string) bool {
+	if len(value) != 64 {
+		return false
+	}
+	_, err := hex.DecodeString(value)
+	return err == nil
 }
 
 func checksum(path string) (string, error) { return checksumContext(context.Background(), path) }

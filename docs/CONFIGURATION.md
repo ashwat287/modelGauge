@@ -34,6 +34,7 @@ different roles and are not interchangeable.
 | `~/.local/share/modelgauge/runtime/REVISION/` | Cached pinned llama.cpp build |
 | `~/.local/share/modelgauge/runtime/current` | Active runtime symlink |
 | `~/.local/share/modelgauge/models/` | Managed model cache |
+| `~/.local/share/modelgauge/model-inventory.json` | Cached inventory checksums, refreshed when file size or modification time changes |
 | `~/.local/share/modelgauge/results/` | Lima-managed agent evidence/journal |
 | `~/.local/share/modelgauge/deploy/` | Control VM embedded deployment assets |
 | `~/.cache/modelgauge/releases/` | Verified matching Linux release agents on CLI host |
@@ -117,3 +118,8 @@ Do not start two differently named agents on the same measured machine. Back up
 the database, tokens, model cache and evidence before a coordinated deployment
 migration; update service configuration and Grafana/Prometheus queries together.
 The current CLI has no automatic legacy migration command.
+
+Model discovery prefers the managed model directory, then `~/models`, then
+`~/benchmark-work/models` when filenames produce the same model ID. Inventory
+fingerprints avoid repeated full-file scans; execution still verifies model
+checksums before benchmarking.

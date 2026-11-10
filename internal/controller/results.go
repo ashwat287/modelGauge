@@ -5,23 +5,25 @@ import (
 	"fmt"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 const StabilityThreshold = 0.10
 
 type RunSummary struct {
-	RunID                string       `json:"run_id"`
-	PlanID               string       `json:"plan_id"`
-	NodeID               string       `json:"node_id"`
-	ModelID              string       `json:"model_id"`
-	ExecutionMode        string       `json:"execution_mode"`
-	Status               string       `json:"status"`
-	InvalidReason        string       `json:"invalid_reason,omitempty"`
-	Recovered            bool         `json:"recovered,omitempty"`
-	CompletedAt          string       `json:"completed_at"`
-	PeakRSSBytes         int64        `json:"peak_rss_bytes,omitempty"`
-	SafeReservationBytes int64        `json:"safe_reservation_bytes,omitempty"`
-	Cases                []StoredCase `json:"cases"`
+	RunID                string                    `json:"run_id"`
+	PlanID               string                    `json:"plan_id"`
+	NodeID               string                    `json:"node_id"`
+	ModelID              string                    `json:"model_id"`
+	ExecutionMode        string                    `json:"execution_mode"`
+	Status               string                    `json:"status"`
+	InvalidReason        string                    `json:"invalid_reason,omitempty"`
+	Recovered            bool                      `json:"recovered,omitempty"`
+	CompletedAt          string                    `json:"completed_at"`
+	PeakRSSBytes         int64                     `json:"peak_rss_bytes,omitempty"`
+	SafeReservationBytes int64                     `json:"safe_reservation_bytes,omitempty"`
+	Cases                []StoredCase              `json:"cases"`
+	Benchmark            *protocol.BenchmarkReport `json:"benchmark,omitempty"`
 }
 
 type StoredCase struct {
@@ -57,17 +59,21 @@ type resultQuerier interface {
 func (s *Store) ListResults(ctx context.Context, nodeID string) ([]RunSummary, error) {
 	return listResults(ctx, s.pool, nodeID)
 }
-func listResults(ctx context.Context, q resultQuerier, nodeID string) ([]RunSummary, error) {
+func listResults(ctx context.Context, q resultQuerier, nodeID string, selectedRun ...string) ([]RunSummary, error) {
+	runID := ""
+	if len(selectedRun) > 0 {
+		runID = selectedRun[0]
+	}
 	rows, err := q.Query(ctx, `
 SELECT run.run_id, run.plan_id::text, run.node_id,
        plan.specification #>> '{model,id}', run.execution_mode, run.status,
        COALESCE(to_char(run.completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), ''),
-       COALESCE(memory.peak_rss_bytes, 0), COALESCE(memory.safe_reservation_bytes, 0),COALESCE(run.invalid_reason,''),COALESCE(run.runtime_metadata->>'recovered','false')='true'
+       COALESCE(memory.peak_rss_bytes, 0), COALESCE(memory.safe_reservation_bytes, 0),COALESCE(run.invalid_reason,''),COALESCE(run.runtime_metadata->>'recovered','false')='true',COALESCE(run.runtime_metadata->>'benchmark',''),COALESCE(run.runtime_metadata->>'serving','')
 FROM benchmark_runs run
 JOIN benchmark_plans plan ON plan.plan_id = run.plan_id
 LEFT JOIN memory_measurements memory ON memory.run_id = run.run_id
-WHERE run.node_id = $1 AND run.status IN ('completed', 'invalid', 'failed','cancelled')
-ORDER BY run.completed_at DESC`, nodeID)
+WHERE run.node_id = $1 AND ($2='' OR run.run_id=$2) AND run.status IN ('completed', 'invalid', 'failed','cancelled')
+ORDER BY run.completed_at DESC`, nodeID, runID)
 	if err != nil {
 		return nil, err
 	}
@@ -75,8 +81,13 @@ ORDER BY run.completed_at DESC`, nodeID)
 	results := []RunSummary{}
 	for rows.Next() {
 		var result RunSummary
-		if err := rows.Scan(&result.RunID, &result.PlanID, &result.NodeID, &result.ModelID, &result.ExecutionMode, &result.Status, &result.CompletedAt, &result.PeakRSSBytes, &result.SafeReservationBytes, &result.InvalidReason, &result.Recovered); err != nil {
+		var raw, legacy string
+		if err := rows.Scan(&result.RunID, &result.PlanID, &result.NodeID, &result.ModelID, &result.ExecutionMode, &result.Status, &result.CompletedAt, &result.PeakRSSBytes, &result.SafeReservationBytes, &result.InvalidReason, &result.Recovered, &raw, &legacy); err != nil {
 			return nil, err
+		}
+		result.Benchmark, err = protocol.DecodeStoredReport(raw, legacy)
+		if err != nil {
+			return nil, fmt.Errorf("invalid stored benchmark report: %w", err)
 		}
 		results = append(results, result)
 	}
@@ -127,6 +138,7 @@ FROM benchmark_runs run
 JOIN benchmark_plans plan ON plan.plan_id = run.plan_id
 LEFT JOIN memory_measurements memory ON memory.run_id = run.run_id
 WHERE run.node_id = $1 AND plan.specification #>> '{model,id}' = $2 AND run.execution_mode = $3 AND run.status = 'completed'
+  AND NOT (plan.specification ? 'serving' OR plan.specification ? 'benchmark')
   AND EXISTS (SELECT 1 FROM benchmark_cases c WHERE c.run_id = run.run_id AND c.prompt_tokens = $4 AND c.generation_tokens = 0)
 ORDER BY run.completed_at DESC LIMIT 1`, nodeID, modelID, mode, contextTokens).Scan(&run.RunID, &run.PlanID, &run.NodeID, &run.ModelID, &run.ExecutionMode, &run.Status, &run.CompletedAt, &run.PeakRSSBytes, &run.SafeReservationBytes)
 	if err != nil {

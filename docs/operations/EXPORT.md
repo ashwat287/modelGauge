@@ -56,6 +56,19 @@ are recorded so these observations are not presented as one atomic global snapsh
 
 ## 🧪 Include raw evidence from a managed Lima target
 
+For a large experiment history, export one run at a time:
+
+```sh
+bin/modelgauge export --node benchmark-node --run RUN_ID \
+  --output exports/one-run --include-raw
+```
+
+`--run` selects the run, its plan, measurements, and registered evidence. Current
+node/model metadata remains included; unrelated installation jobs are omitted.
+The manifest records the selection. This keeps exports within the existing
+64 MiB response limit; it requires an updated controller. `--start` and `--end`
+continue to select Prometheus history only.
+
 ```sh
 bin/modelgauge export --node benchmark-node --output exports/with-evidence --include-raw
 ```

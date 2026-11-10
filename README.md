@@ -32,6 +32,7 @@ Lima provides separate Linux control and benchmark VMs for local use.
 - Resolve catalog models, download checksum-verified GGUF files remotely, and inventory installed models.
 - Generate per-model plans and multi-model campaigns with thread/context matrices.
 - Measure prompt processing, generation throughput and peak resident memory; retain raw evidence on the node.
+- In current source, benchmark an existing inference endpoint for streaming latency, concurrency/goodput, context/cache behavior, sustained load, task fixtures, cancellation and available resource metrics. See [serving benchmarks](docs/BENCHMARKING.md#-benchmarks-against-an-existing-inference-endpoint); no server or infrastructure provisioning is added.
 - Query results and deterministic, evidence-linked thread/memory recommendations.
 - Recover interrupted work using leases, checkpoints and a durable agent journal; cancel queued or active jobs.
 - Current source builds export results as JSON/CSV, current metrics, optional Prometheus history and verified raw evidence.

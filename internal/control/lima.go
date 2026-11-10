@@ -12,6 +12,7 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"os/exec"
@@ -298,18 +299,16 @@ systemctl --user daemon-reload
 		}
 		resultErr = errors.Join(resultErr, rawShell(recovery, name, restore, nil, io.Discard))
 	}()
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", local, health)
-	client := &http.Client{Timeout: time.Second}
-	healthy := func() bool {
-		req, _ := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
-		resp, err := client.Do(req)
-		if err != nil {
-			return false
-		}
-		resp.Body.Close()
-		return resp.StatusCode == 200
-	}
 	unit := fmt.Sprintf("modelgauge-forward-%d", local)
+	if previous != "" {
+		if err := shell(ctx, name, "systemctl --user stop "+quote(unit), nil, io.Discard); err != nil {
+			return err
+		}
+	}
+	if err := requireForwardPortFree(ctx, local, previousActive == "active"); err != nil {
+		return err
+	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", local, health)
 	script := `set -euo pipefail
 mkdir -p "$HOME/.config/systemd/user"
 unit=` + quote(unit) + `
@@ -334,7 +333,7 @@ systemctl --user is-active --quiet "$unit"
 		return err
 	}
 	for attempt := 0; attempt < 30; attempt++ {
-		if healthy() {
+		if forwardHealthy(ctx, endpoint, service) {
 			return nil
 		}
 		select {
@@ -425,4 +424,57 @@ func (s *bootstrapSession) trackScope(scope string, add bool) error {
 
 func scopeCommand(scope, script string) string {
 	return "exec systemd-run --user --scope --quiet --collect --unit=" + quote(scope) + " bash -lc " + quote(script)
+}
+
+// Stop our old forward first: an occupied host port must not impersonate this VM.
+func requireForwardPortFree(ctx context.Context, port int, wait bool) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid forward port")
+	}
+	probeCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+	defer cancel()
+	for {
+		if err := probeCtx.Err(); err != nil {
+			return err
+		}
+		listener, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
+		if err == nil {
+			return listener.Close()
+		}
+		if !wait {
+			return fmt.Errorf("host port %d is already in use; choose another port: %w", port, err)
+		}
+		select {
+		case <-probeCtx.Done():
+			return fmt.Errorf("host port %d did not become free after stopping the owned forward: %w", port, probeCtx.Err())
+		case <-time.After(100 * time.Millisecond):
+		}
+	}
+}
+
+func forwardHealthy(ctx context.Context, endpoint, service string) bool {
+	client := &http.Client{Timeout: time.Second, CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	req, err := http.NewRequestWithContext(ctx, "GET", endpoint, nil)
+	if err != nil {
+		return false
+	}
+	resp, err := client.Do(req)
+	if err != nil {
+		return false
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode != http.StatusOK {
+		return false
+	}
+	var response struct {
+		Status   string `json:"status"`
+		Database string `json:"database"`
+	}
+	if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&response) != nil {
+		return false
+	}
+	if service == "modelgauge-controller" {
+		return response.Status == "ok" && response.Database == "reachable"
+	}
+	return response.Database == "ok"
 }

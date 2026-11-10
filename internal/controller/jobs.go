@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"github.com/jackc/pgx/v5"
+	"github.com/nerdylucifer/modelgauge/internal/benchmark"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"regexp"
 	"time"
@@ -128,7 +129,7 @@ func (s *Store) QueuePlanRequest(ctx context.Context, plan protocol.Plan, key st
 	if key == "" {
 		return s.QueuePlan(ctx, plan)
 	}
-	if err := plan.Validate(); err != nil {
+	if err := benchmark.ValidatePlan(plan); err != nil {
 		return "", err
 	}
 	data, err := json.Marshal(plan)

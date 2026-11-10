@@ -11,6 +11,7 @@ import (
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
+	"github.com/nerdylucifer/modelgauge/internal/benchmark"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
@@ -226,7 +227,7 @@ func (s *Store) CompleteInstall(ctx context.Context, node, id, token, failure st
 }
 
 func (s *Store) QueuePlan(ctx context.Context, plan protocol.Plan) (string, error) {
-	if err := plan.Validate(); err != nil {
+	if err := benchmark.ValidatePlan(plan); err != nil {
 		return "", err
 	}
 	specification, err := json.Marshal(plan)
@@ -333,6 +334,9 @@ ON CONFLICT (run_id) DO NOTHING`,
 }
 
 func (s *Store) CompleteRun(ctx context.Context, nodeID, planID, leaseToken string, result protocol.Result) error {
+	if err := benchmark.ValidateResult(result); err != nil {
+		return err
+	}
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return err
@@ -438,9 +442,18 @@ ON CONFLICT (run_id, artifact_name) DO UPDATE SET sha256 = EXCLUDED.sha256`,
 	if cancelled {
 		planStatus = "cancelled"
 	}
-	metadata := result.RuntimeMetadata
-	if metadata == nil {
-		metadata = map[string]string{}
+	metadata := make(map[string]string, len(result.RuntimeMetadata)+1)
+	for key, value := range result.RuntimeMetadata {
+		metadata[key] = value
+	}
+	delete(metadata, "serving")
+	delete(metadata, "benchmark")
+	if result.Benchmark != nil {
+		report, err := json.Marshal(result.Benchmark)
+		if err != nil {
+			return err
+		}
+		metadata["benchmark"] = string(report)
 	}
 	metadataJSON, err := json.Marshal(metadata)
 	if err != nil {

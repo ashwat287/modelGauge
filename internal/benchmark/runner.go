@@ -2,7 +2,6 @@
 package benchmark
 
 import (
-	"bytes"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
@@ -20,6 +19,7 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/nerdylucifer/modelgauge/internal/modelcache"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
@@ -53,8 +53,8 @@ func Run(ctx context.Context, plan protocol.Plan, outputDir string) (protocol.Re
 	return RunWithOptions(ctx, plan, Options{OutputDir: outputDir})
 }
 
-// RunWithOptions executes a plan with a caller-controlled run identity.
-func RunWithOptions(ctx context.Context, plan protocol.Plan, options Options) (protocol.Result, string, error) {
+// runEnginePlan executes the legacy llama-bench workload.
+func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (protocol.Result, string, error) {
 	if runtime.GOOS != "linux" {
 		return protocol.Result{}, "", fmt.Errorf("benchmark execution requires Linux; on a Mac, run the agent inside a Lima Linux VM")
 	}
@@ -63,7 +63,7 @@ func RunWithOptions(ctx context.Context, plan protocol.Plan, options Options) (p
 		return protocol.Result{}, "", err
 	}
 	defer unlock()
-	if err := plan.Validate(); err != nil {
+	if err := validateEnginePlan(plan); err != nil {
 		return protocol.Result{}, "", fmt.Errorf("validate plan: %w", err)
 	}
 
@@ -86,8 +86,8 @@ func RunWithOptions(ctx context.Context, plan protocol.Plan, options Options) (p
 	if outputDir == "" {
 		outputDir = filepath.Join("results", runID)
 	}
-	if err := os.MkdirAll(outputDir, 0o750); err != nil {
-		return protocol.Result{}, "", fmt.Errorf("create output directory: %w", err)
+	if err := prepareOutputDir(outputDir, options.Resume); err != nil {
+		return protocol.Result{}, outputDir, err
 	}
 
 	planPath := filepath.Join(outputDir, "plan.json")
@@ -99,11 +99,13 @@ func RunWithOptions(ctx context.Context, plan protocol.Plan, options Options) (p
 			if err = json.Unmarshal(data, &previous); err != nil {
 				return protocol.Result{}, outputDir, err
 			}
-			before, _ := json.Marshal(previous)
-			after, _ := json.Marshal(plan)
-			if !bytes.Equal(before, after) {
+			if !sameEngineResumePlan(previous, plan, binary) {
 				return protocol.Result{}, outputDir, fmt.Errorf("resume plan does not match saved plan")
 			}
+		} else if !os.IsNotExist(err) {
+			return protocol.Result{}, outputDir, err
+		} else if entries, e := os.ReadDir(outputDir); e != nil || len(entries) != 0 {
+			return protocol.Result{}, outputDir, fmt.Errorf("refusing to resume an unrecognized nonempty output directory")
 		}
 	}
 	binaryHash, err := sha256FileContext(ctx, binary)
@@ -116,10 +118,10 @@ func RunWithOptions(ctx context.Context, plan protocol.Plan, options Options) (p
 			return protocol.Result{}, outputDir, fmt.Errorf("runtime changed since interrupted run")
 		}
 	}
-	if err = os.WriteFile(hashPath, []byte(binaryHash), 0640); err != nil {
+	if err := writeJSON(planPath, plan); err != nil {
 		return protocol.Result{}, outputDir, err
 	}
-	if err := writeJSON(planPath, plan); err != nil {
+	if err = os.WriteFile(hashPath, []byte(binaryHash), 0640); err != nil {
 		return protocol.Result{}, outputDir, err
 	}
 	preflight, err := snapshot()
@@ -316,7 +318,7 @@ func resolveBinary(configured string) (string, error) {
 		}
 		return configured, nil
 	}
-	binary, err := exec.LookPath("llama-bench")
+	binary, err := modelcache.DiscoverLlamaBench()
 	if err != nil {
 		return "", fmt.Errorf("find llama-bench: %w", err)
 	}
@@ -447,4 +449,22 @@ func (r contextReader) Read(p []byte) (int, error) {
 		return 0, err
 	}
 	return r.reader.Read(p)
+}
+
+func prepareOutputDir(path string, resume bool) error {
+	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
+		return err
+	}
+	err := os.Mkdir(path, 0750)
+	if err != nil && !(resume && os.IsExist(err)) {
+		return fmt.Errorf("output must be a new directory unless resuming: %w", err)
+	}
+	info, err := os.Lstat(path)
+	if err != nil {
+		return err
+	}
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("output must be a real directory")
+	}
+	return nil
 }

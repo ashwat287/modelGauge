@@ -19,6 +19,7 @@ func (q *exportQueries) Set(value string) error { *q = append(*q, value); return
 func runExport(ctx context.Context, args []string, out, stderr io.Writer) int {
 	f := flag.NewFlagSet("export", flag.ContinueOnError)
 	setFlagOutput(f, stderr)
+	runID := f.String("run", "", "export one run and its related plan/evidence instead of all node history")
 	node := f.String("node", "", "node ID to export")
 	destination := f.String("output", "", "new directory for the export bundle")
 	controllerURL := f.String("controller", os.Getenv("MODELGAUGE_CONTROLLER_URL"), "controller URL")
@@ -42,7 +43,7 @@ func runExport(ctx context.Context, args []string, out, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "--node, --output and a controller/admin connection are required")
 		return 2
 	}
-	options := exporter.Options{NodeID: *node, Output: *destination, ControllerURL: *controllerURL, AdminToken: *token, PrometheusURL: *prom, PrometheusToken: os.Getenv("MODELGAUGE_PROMETHEUS_TOKEN"), Step: *step, Queries: queries}
+	options := exporter.Options{RunID: *runID, NodeID: *node, Output: *destination, ControllerURL: *controllerURL, AdminToken: *token, PrometheusURL: *prom, PrometheusToken: os.Getenv("MODELGAUGE_PROMETHEUS_TOKEN"), Step: *step, Queries: queries}
 	for _, entry := range []struct {
 		value  string
 		target *time.Time

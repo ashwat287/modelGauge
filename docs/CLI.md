@@ -89,6 +89,31 @@ A completed install may need one more agent poll before inventory is updated.
 
 ## 🧪 Benchmark campaigns
 
+For current-source endpoint benchmarks, use `benchmark serving plan|run|report`.
+The endpoint must already exist; no provisioning or server lifecycle changes occur.
+
+```sh
+modelgauge benchmark serving plan --endpoint http://127.0.0.1:8080 \
+  --model my-model --concurrency 1,2 --requests 20 --output serving.json
+modelgauge benchmark serving run --plan serving.json --output results/serving
+modelgauge benchmark serving report --file results/serving/result.json --format csv
+# Alternatively submit the plan to an updated agent/controller:
+modelgauge benchmark submit --plan serving.json
+```
+
+Set `--node` and `--execution-mode` when planning for an agent. Important planning
+flags: `--api openai|llama.cpp`, `--served-model`, `--suite basic|deployment`,
+`--contexts`, `--concurrency`, `--requests`, `--duration`, `--request-rate`,
+`--warmups`, `--output-tokens`, `--request-timeout`, `--readiness-timeout`,
+`--readiness-path`, `--sustain-duration`, `--idle-before`, `--switch-models`,
+`--dataset`, `--ttft-ms`, `--tpot-ms`, `--latency-ms`, `--metrics-url`,
+`--local-server-pid`, `--sample-interval`, `--seed`, `--temperature` and
+`--record-outputs`. Authentication uses `MODELGAUGE_INFERENCE_TOKEN` and the
+separate optional `MODELGAUGE_INFERENCE_METRICS_TOKEN`, not command-line secrets.
+See [serving methodology and limitations](BENCHMARKING.md#-benchmarks-against-an-existing-inference-endpoint).
+
+The following campaign commands remain the CPU engine benchmark workflow.
+
 ```sh
 modelgauge benchmark profiles list
 modelgauge benchmark campaign create \
@@ -206,6 +231,7 @@ See [ownership and retry details](operations/CLEANUP.md).
 
 ```sh
 modelgauge export --node benchmark-node --output exports/results
+modelgauge export --node benchmark-node --run RUN_ID --output exports/one-run
 modelgauge export --node benchmark-node --output exports/evidence --include-raw
 modelgauge export --node benchmark-node --output exports/history \
   --prometheus-url http://127.0.0.1:9090 \

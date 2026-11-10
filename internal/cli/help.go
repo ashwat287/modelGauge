@@ -68,6 +68,12 @@ func showRequestedHelp(args []string, out io.Writer) (bool, int) {
 }
 
 var commandHelp = map[string]string{
+	"benchmark serving": `🧪 Benchmark an existing inference endpoint
+  modelgauge benchmark serving plan --endpoint http://127.0.0.1:8080 --model MODEL --output serving.json
+  modelgauge benchmark serving run --plan serving.json --output results/serving
+  modelgauge benchmark serving report --file results/serving/result.json --format csv
+Use benchmark submit for agent execution. No inference servers or infrastructure are provisioned.
+Use leaf commands with --help for all flags; see docs/BENCHMARKING.md.`,
 	"export": `📦 Export results and metrics before cleanup
   modelgauge export --node benchmark-node --output exports/experiment
   modelgauge export --node benchmark-node --output exports/with-raw --include-raw
@@ -125,6 +131,8 @@ Use 'model install --help' for the flag defaults.`,
   modelgauge benchmark plan create --node NODE_ID --model /target/model.gguf --output plan.json
   modelgauge benchmark submit --plan plan.json
   modelgauge benchmark run --plan plan.json --output results/local
+  modelgauge benchmark serving plan --endpoint http://SERVER:8080 --model MODEL_ID --output serving.json
+  modelgauge benchmark serving run --plan serving.json --output results/serving
   modelgauge benchmark cancel PLAN_ID
 Campaigns resolve installed model IDs. Plan creation hashes a file visible to this CLI.
 Always set --execution-mode lima-linux for Lima targets. See docs/BENCHMARKING.md.`,

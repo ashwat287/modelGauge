@@ -7,9 +7,9 @@ import (
 )
 
 func (s *Server) exportNode(w http.ResponseWriter, r *http.Request) {
-	snapshot, err := s.store.ExportNode(r.Context(), r.PathValue("nodeID"))
+	snapshot, err := s.store.ExportNodeRun(r.Context(), r.PathValue("nodeID"), r.URL.Query().Get("run"))
 	if errors.Is(err, controller.ErrNotFound) {
-		writeError(w, http.StatusNotFound, "node not found")
+		writeError(w, http.StatusNotFound, "node or selected run not found")
 		return
 	}
 	if err != nil {

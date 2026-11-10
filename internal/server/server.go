@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nerdylucifer/modelgauge/internal/benchmark"
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/controller"
 	"github.com/nerdylucifer/modelgauge/internal/modelcache"
@@ -415,6 +416,10 @@ func (s *Server) completeRun(writer http.ResponseWriter, request *http.Request) 
 	}
 	if payload.Result.Status != protocol.RunStatusCompleted && payload.Result.Status != protocol.RunStatusFailed && payload.Result.Status != protocol.RunStatusInvalid && payload.Result.Status != protocol.RunStatusCancelled {
 		writeError(writer, 400, "result must have a terminal status")
+		return
+	}
+	if err := benchmark.ValidateResult(payload.Result); err != nil {
+		writeError(writer, http.StatusBadRequest, err.Error())
 		return
 	}
 	err := s.store.CompleteRun(request.Context(), request.PathValue("nodeID"), payload.PlanID, payload.LeaseToken, payload.Result)

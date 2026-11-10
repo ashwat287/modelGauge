@@ -28,6 +28,7 @@ type Result struct {
 	Memory          *MemoryResult     `json:"memory,omitempty"`
 	RuntimeMetadata map[string]string `json:"runtime_metadata,omitempty"`
 	Artifacts       []Artifact        `json:"artifacts,omitempty"`
+	Benchmark       *BenchmarkReport  `json:"benchmark,omitempty"`
 }
 
 type CaseResult struct {
