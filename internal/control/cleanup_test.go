@@ -61,15 +61,24 @@ func (f *fakeLima) run(ctx context.Context, args []string, input []byte) ([]byte
 		return out.Bytes(), nil
 	case "create":
 		var name string
+		var owner string
 		for i, arg := range args {
 			if arg == "--name" {
 				name = args[i+1]
+			}
+			if arg == "--set" {
+				prefix := ".env." + limaOwnerEnv + " = "
+				if !strings.HasPrefix(args[i+1], prefix) || json.Unmarshal([]byte(strings.TrimPrefix(args[i+1], prefix)), &owner) != nil {
+					return nil, fmt.Errorf("invalid Lima creation owner")
+				}
 			}
 		}
 		if f.guests[name] != nil {
 			return nil, fmt.Errorf("already exists")
 		}
-		f.add(name)
+		g := f.add(name)
+		g.instance.Config.Env = map[string]string{limaOwnerEnv: owner}
+		g.instance.Status = "Stopped"
 		return nil, nil
 	case "start":
 		f.guests[args[len(args)-1]].instance.Status = "Running"

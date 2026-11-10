@@ -101,6 +101,15 @@ func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (repor
 		if target.Delete && vm.Protected {
 			return report, fmt.Errorf("VM %s is protected; refusing deletion", v.Name)
 		}
+		if v.BootstrapState == "creating" {
+			target.Status = "creation_incomplete"
+			target.Note = "Incomplete VM creation; cleanup --delete-vms removes the verified partial VM without booting it"
+			if !o.DryRun && !o.DeleteVMs {
+				return report, fmt.Errorf("VM %s creation is incomplete; use cleanup --delete-vms to remove it", v.Name)
+			}
+			report.Targets = append(report.Targets, target)
+			continue
+		}
 		if o.DryRun && len(v.Scopes) > 0 {
 			target.Status = "provisioning_recovery_required"
 			target.Note = "Interrupted provisioning scopes must be stopped by actual cleanup before guest verification"
@@ -178,14 +187,14 @@ func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (repor
 	// Quiesce all pollers/owned user services, then recheck every target. New work
 	// that raced the first inspection must prevent deletion rather than be lost.
 	for _, v := range registry.VMs {
-		if _, exists := instances[v.Name]; exists && !v.Cleaned {
+		if _, exists := instances[v.Name]; exists && !v.Cleaned && v.BootstrapState != "creating" {
 			if _, e := m.guest(ctx, v, "quiesce", v.Files); e != nil {
 				return report, e
 			}
 		}
 	}
 	for _, v := range registry.VMs {
-		if _, exists := instances[v.Name]; exists {
+		if _, exists := instances[v.Name]; exists && v.BootstrapState != "creating" {
 			if _, e := m.guest(ctx, v, "inspect", v.Files); e != nil {
 				return report, e
 			}
@@ -197,7 +206,7 @@ func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (repor
 	remaining := append([]ownedVM(nil), registry.VMs...)
 	for _, v := range registry.VMs {
 		_, exists := instances[v.Name]
-		if exists && !v.Cleaned {
+		if exists && !v.Cleaned && v.BootstrapState != "creating" {
 			if _, e := m.guest(ctx, v, "clean", v.Files); e != nil {
 				return report, e
 			}
@@ -221,8 +230,10 @@ func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (repor
 				if e = verifyVM(v, instance); e != nil {
 					return report, e
 				}
-				if _, e = m.run(ctx, []string{"stop", v.Name}, nil); e != nil {
-					return report, e
+				if instance.Status != "Stopped" {
+					if _, e = m.run(ctx, []string{"stop", v.Name}, nil); e != nil {
+						return report, e
+					}
 				}
 				stopped, checkErr := m.instances(ctx)
 				if checkErr != nil {

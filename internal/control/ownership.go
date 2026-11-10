@@ -20,6 +20,7 @@ import (
 )
 
 const ownershipSchema = "modelgauge-ownership/v1"
+const limaOwnerEnv = "MODELGAUGE_OWNER_ID"
 
 var validOwner = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var validScope = regexp.MustCompile(`^modelgauge-provision-[a-f0-9]{32}\.scope$`)
@@ -50,6 +51,9 @@ type limaInstance struct {
 	Dir       string `json:"dir"`
 	Status    string `json:"status"`
 	Protected bool   `json:"protected"`
+	Config    struct {
+		Env map[string]string `json:"env"`
+	} `json:"config"`
 }
 type ownershipManager struct {
 	directory string
@@ -123,8 +127,12 @@ func (m *ownershipManager) load() (ownershipRegistry, error) {
 	}
 	names := map[string]bool{}
 	for _, v := range registry.VMs {
-		if !validVMName.MatchString(v.Name) || !validOwner.MatchString(v.ID) || (v.Role != "control" && v.Role != "benchmark") || !filepath.IsAbs(v.Dir) || names[v.Name] {
+		creating := v.BootstrapState == "creating"
+		if !validVMName.MatchString(v.Name) || !validOwner.MatchString(v.ID) || (v.Role != "control" && v.Role != "benchmark") || (!filepath.IsAbs(v.Dir) && !(creating && v.Dir == "")) || names[v.Name] {
 			return registry, fmt.Errorf("invalid or duplicate ownership record")
+		}
+		if creating && (!v.Created || v.MachineID != "" || v.Prepared || v.Cleaned || v.HelperSHA256 != "" || v.HelperArch != "" || len(v.Scopes) > 0) {
+			return registry, fmt.Errorf("invalid VM creation intent")
 		}
 		if v.MachineID != "" && !validOwner.MatchString(v.MachineID) {
 			return registry, fmt.Errorf("invalid machine identity")
@@ -184,12 +192,21 @@ func verifyVM(v ownedVM, instance limaInstance) error {
 	if err != nil {
 		return err
 	}
-	if dir != v.Dir {
+	creating := v.BootstrapState == "creating"
+	if creating && (!v.Created || instance.Config.Env[limaOwnerEnv] != v.ID) {
+		return fmt.Errorf("VM %s at %s creation identity mismatch; refusing to claim it", v.Name, dir)
+	}
+	if dir != v.Dir && !(creating && v.Dir == "") {
 		return fmt.Errorf("VM %s has been replaced or moved", v.Name)
 	}
 	if v.Created {
 		path := markerPath(dir)
 		info, err := os.Lstat(path)
+		if creating && errors.Is(err, os.ErrNotExist) {
+			// Lima writes the supplied owner into its config before downloading
+			// images. A partial create therefore needs no guest or marker yet.
+			return nil
+		}
 		if err != nil {
 			return fmt.Errorf("VM %s ownership marker missing: %w", v.Name, err)
 		}
@@ -266,12 +283,12 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 	session.previousConnection, _ = os.ReadFile(m.directory + "/control.json")
 	defer func() {
 		if failed {
-			if session.newVM && session.vm.Dir != "" {
+			if session.newVM {
 				recovery, cancel := context.WithTimeout(context.Background(), 2*time.Minute)
 				err := m.rollbackNewVM(recovery, session.vm, session.previousConnection)
 				cancel()
 				if err != nil {
-					resultErr = errors.Join(resultErr, fmt.Errorf("rollback failed; ownership retained: %w", err))
+					resultErr = errors.Join(resultErr, fmt.Errorf("rollback failed; ownership retained for %s; retry modelgauge cleanup --delete-vms: %w", name, err))
 				} else {
 					resultErr = errors.Join(resultErr, fmt.Errorf("rollback completed: newly created VM %s removed", name))
 				}
@@ -305,6 +322,9 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 		if err = verifyVM(registry.VMs[index], instance); err != nil {
 			return ctx, nil, err
 		}
+		if registry.VMs[index].BootstrapState == "creating" {
+			return ctx, nil, fmt.Errorf("VM %s creation is incomplete; run modelgauge cleanup --delete-vms before retrying", name)
+		}
 	} else {
 		owner := make([]byte, 16)
 		if _, err = rand.Read(owner); err != nil {
@@ -312,8 +332,15 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 		}
 		v := ownedVM{BootstrapState: "provisioning", Name: name, Role: role, ID: hex.EncodeToString(owner), Created: !exists, Files: reservedFiles(role, port)}
 		if !exists {
+			v.BootstrapState = "creating"
+			registry.VMs = append(registry.VMs, v)
+			index = len(registry.VMs) - 1
+			if err = m.save(registry); err != nil {
+				return ctx, nil, err
+			}
+			session.newVM, session.vm = true, v
 			fmt.Fprintf(log, "Creating owned Lima VM %s\n", name)
-			_, err = m.run(ctx, []string{"create", "--tty=false", "--name", name, "--cpus", fmt.Sprint(cpus), "--memory", fmt.Sprint(memory), "--disk", fmt.Sprint(disk), "--containerd", "none", "template:ubuntu"}, nil)
+			_, err = m.run(ctx, []string{"create", "--tty=false", "--name", name, "--cpus", fmt.Sprint(cpus), "--memory", fmt.Sprint(memory), "--disk", fmt.Sprint(disk), "--containerd", "none", "--set", fmt.Sprintf(".env.%s = %q", limaOwnerEnv, v.ID), "template:ubuntu"}, nil)
 			if err != nil {
 				return ctx, nil, err
 			}
@@ -331,6 +358,9 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 			return ctx, nil, err
 		}
 		if v.Created {
+			if err = verifyVM(v, instance); err != nil {
+				return ctx, nil, err
+			}
 			f, e := os.OpenFile(markerPath(v.Dir), os.O_WRONLY|os.O_CREATE|os.O_EXCL, 0600)
 			if e != nil {
 				return ctx, nil, e
@@ -347,14 +377,18 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 				return ctx, nil, closeErr
 			}
 		}
-		if v.Created {
-			session.newVM = true
-			session.vm = v
+		v.BootstrapState = "provisioning"
+		if index < 0 {
+			registry.VMs = append(registry.VMs, v)
+			index = len(registry.VMs) - 1
+		} else {
+			registry.VMs[index] = v
 		}
-		registry.VMs = append(registry.VMs, v)
-		index = len(registry.VMs) - 1
 		if err = m.save(registry); err != nil {
 			return ctx, nil, err
+		}
+		if v.Created {
+			session.vm = v
 		}
 	}
 	fmt.Fprintf(log, "Starting %s (VM created by ModelGauge: %t)\n", name, registry.VMs[index].Created)
@@ -628,8 +662,10 @@ func (m *ownershipManager) rollbackNewVM(ctx context.Context, v ownedVM, previou
 				return fmt.Errorf("guest identity changed")
 			}
 		}
-		if _, err = m.run(ctx, []string{"stop", v.Name}, nil); err != nil {
-			return err
+		if vm.Status != "Stopped" {
+			if _, err = m.run(ctx, []string{"stop", v.Name}, nil); err != nil {
+				return err
+			}
 		}
 		current, e := m.instances(ctx)
 		if e != nil {

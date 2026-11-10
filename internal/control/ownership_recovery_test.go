@@ -3,11 +3,159 @@ package control
 import (
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 )
+
+func TestCreationFailureRollsBackBeforeGuestPreparation(t *testing.T) {
+	for _, partial := range []bool{false, true} {
+		for _, interrupted := range []bool{false, true} {
+			t.Run(fmt.Sprintf("partial=%t/interrupted=%t", partial, interrupted), func(t *testing.T) {
+				m, f := fixture(t)
+				other := f.add("unrelated")
+				ctx, cancel := context.WithCancel(context.Background())
+				defer cancel()
+				cause := errors.New("image download failed")
+				if interrupted {
+					cause = context.Canceled
+				}
+				original := m.run
+				m.run = func(ctx context.Context, args []string, input []byte) ([]byte, error) {
+					if err := ctx.Err(); err != nil {
+						return nil, err
+					}
+					if args[0] != "create" {
+						return original(ctx, args, input)
+					}
+					registry, err := m.load()
+					if err != nil || len(registry.VMs) != 1 || registry.VMs[0].BootstrapState != "creating" {
+						t.Fatalf("creation started without durable intent: %+v, %v", registry, err)
+					}
+					if partial {
+						if _, err = original(ctx, args, input); err != nil {
+							t.Fatal(err)
+						}
+					}
+					if interrupted {
+						cancel()
+					}
+					return nil, cause
+				}
+				_, _, err := m.provision(ctx, "target", "control", 2, 3, 20, 18080, io.Discard)
+				if !errors.Is(err, cause) || !strings.Contains(err.Error(), "rollback completed:") {
+					t.Fatal("original failure or rollback outcome lost:", err)
+				}
+				registry, err := m.load()
+				if err != nil || len(registry.VMs) != 0 || f.guests["target"] != nil || f.guests["unrelated"] != other {
+					t.Fatal("creation leaked or unrelated VM changed:", registry, err)
+				}
+				for _, args := range f.calls {
+					if args[0] == "start" || args[0] == "shell" {
+						t.Fatal("partial VM booted or inspected through guest:", args)
+					}
+				}
+			})
+		}
+	}
+}
+
+func TestPartialCreationCleanupRetryDoesNotBootGuest(t *testing.T) {
+	m, f := fixture(t)
+	original := m.run
+	m.run = func(ctx context.Context, args []string, input []byte) ([]byte, error) {
+		out, err := original(ctx, args, input)
+		if args[0] == "create" && err == nil {
+			return nil, errors.New("image download failed")
+		}
+		return out, err
+	}
+	f.failDelete = true
+	_, _, err := m.provision(context.Background(), "target", "control", 2, 3, 20, 18080, io.Discard)
+	if err == nil || !strings.Contains(err.Error(), "rollback failed") {
+		t.Fatal(err)
+	}
+	registry, err := m.load()
+	if err != nil || len(registry.VMs) != 1 || registry.VMs[0].BootstrapState != "creating" {
+		t.Fatal("creation intent lost on failed deletion:", registry, err)
+	}
+	f.calls = nil
+	report, err := m.cleanup(context.Background(), CleanupOptions{DryRun: true, DeleteVMs: true})
+	if err != nil || len(report.Targets) != 1 || report.Targets[0].Status != "creation_incomplete" {
+		t.Fatal(report, err)
+	}
+	if _, err = m.cleanup(context.Background(), CleanupOptions{}); err == nil || f.guests["target"] == nil {
+		t.Fatal("partial VM removed without explicit VM deletion")
+	}
+	f.failDelete = false
+	if _, err = m.cleanup(context.Background(), CleanupOptions{DeleteVMs: true}); err != nil {
+		t.Fatal("could not retry partial creation cleanup:", err)
+	}
+	if f.guests["target"] != nil || exists(m.path()) {
+		t.Fatal("partial VM or ownership record retained after successful retry")
+	}
+	for _, args := range f.calls {
+		if args[0] == "start" || args[0] == "shell" {
+			t.Fatal("partial VM cleanup tried to boot/use a guest:", args)
+		}
+	}
+}
+
+func TestPartialCreationRollbackRefusesUnprovenOwnership(t *testing.T) {
+	for _, changed := range []string{"foreign", "wrong-owner", "protected", "changed-marker", "symlink"} {
+		t.Run(changed, func(t *testing.T) {
+			m, f := fixture(t)
+			original := m.run
+			m.run = func(ctx context.Context, args []string, input []byte) ([]byte, error) {
+				if args[0] != "create" {
+					return original(ctx, args, input)
+				}
+				if _, err := original(ctx, args, input); err != nil {
+					return nil, err
+				}
+				g := f.guests["target"]
+				switch changed {
+				case "foreign":
+					g.instance.Config.Env = nil
+				case "wrong-owner":
+					g.instance.Config.Env[limaOwnerEnv] = strings.Repeat("f", 32)
+				case "protected":
+					g.instance.Protected = true
+				case "changed-marker":
+					if err := os.WriteFile(markerPath(g.instance.Dir), []byte("foreign owner"), 0600); err != nil {
+						t.Fatal(err)
+					}
+				case "symlink":
+					link := filepath.Join(f.root, "replaced")
+					if err := os.Symlink(g.instance.Dir, link); err != nil {
+						t.Fatal(err)
+					}
+					g.instance.Dir = link
+				}
+				return nil, errors.New("create failed")
+			}
+			_, _, err := m.provision(context.Background(), "target", "control", 2, 3, 20, 18080, io.Discard)
+			if err == nil || !strings.Contains(err.Error(), "rollback failed") || f.guests["target"] == nil {
+				t.Fatal("unproven VM removed:", err)
+			}
+			if _, err = m.cleanup(context.Background(), CleanupOptions{DeleteVMs: true}); err == nil {
+				t.Fatal("cleanup accepted unproven creation ownership")
+			}
+			registry, err := m.load()
+			if err != nil || len(registry.VMs) != 1 {
+				t.Fatal("manual recovery evidence lost:", registry, err)
+			}
+			for _, args := range f.calls {
+				if args[0] == "stop" || args[0] == "delete" || args[0] == "start" || args[0] == "shell" {
+					t.Fatal("unproven VM touched:", args)
+				}
+			}
+		})
+	}
+}
 
 func TestBootstrapFailureRollbackIsInvocationScoped(t *testing.T) {
 	for _, reused := range []bool{false, true} {

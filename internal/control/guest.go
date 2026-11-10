@@ -91,6 +91,9 @@ func (m *ownershipManager) prepareHelper(ctx context.Context, v *ownedVM) error 
 	return nil
 }
 func (m *ownershipManager) removeHelper(v ownedVM) error {
+	if v.Dir == "" {
+		return nil // Creation can fail before an instance directory or helper exists.
+	}
 	if _, err := os.Lstat(helperPath(v)); os.IsNotExist(err) {
 		return nil
 	} else if err != nil {
