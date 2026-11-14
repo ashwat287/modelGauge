@@ -82,21 +82,37 @@ func TestWorkerKeepsAuthorizationAlive(t *testing.T) {
 		}
 	}))
 	defer server.Close()
+	defer close(release)
 	reader, writer := io.Pipe()
 	defer reader.Close()
 	defer writer.Close()
 	var out bytes.Buffer
 	done := make(chan error, 1)
-	go func() { done <- runWorker(context.Background(), reader, &out, 200*time.Millisecond) }()
+	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	defer cancel()
+	stopWrite := context.AfterFunc(ctx, func() { reader.CloseWithError(ctx.Err()) })
+	defer stopWrite()
+	go func() {
+		done <- runWorker(ctx, reader, &out, time.Second)
+		reader.Close()
+	}()
 	_ = json.NewEncoder(writer).Encode(workerRequest{Operation: "install", ModelID: "test-model", SourceURL: server.URL})
-	<-started
-	for i := 0; i < 5; i++ {
-		time.Sleep(60 * time.Millisecond)
+	select {
+	case <-started:
+	case <-ctx.Done():
+		t.Fatal("download did not start:", ctx.Err())
+	}
+	for i := 0; i < 6; i++ {
+		time.Sleep(200 * time.Millisecond)
 		if _, err := io.WriteString(writer, "{}\n"); err != nil {
 			t.Fatal(err)
 		}
 	}
-	close(release)
+	select {
+	case release <- struct{}{}:
+	case <-ctx.Done():
+		t.Fatal("download stopped before release:", ctx.Err())
+	}
 	select {
 	case err := <-done:
 		if err != nil {
