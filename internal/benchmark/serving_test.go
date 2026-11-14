@@ -19,7 +19,7 @@ import (
 )
 
 func servingFixture(endpoint string) protocol.Plan {
-	return servingPlanWithConfig(protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: "node", ExecutionMode: protocol.ExecutionModeLima, Runtime: protocol.Runtime{Kind: "http"}, Model: protocol.Model{ID: "model"}}, &ServingPlan{Endpoint: endpoint, API: "openai", ServedModel: "model", RequestTimeout: 2, ReadinessTimeout: 1, SampleInterval: .1, Targets: ServingTargets{TTFTMS: 1000, TPOTMS: 1000}, Cases: []ServingCase{{ID: "load", Scenario: "load", Concurrency: 2, Requests: 3, OutputTokens: 16, WarmupRequests: 1, Prompts: []ServingPrompt{{ID: "json", Text: "Return JSON", Expect: &ServingChecks{JSON: true, JSONSubset: json.RawMessage(`{"answer":4}`)}}}}}})
+	return servingPlanWithConfig(protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: "node", ExecutionMode: protocol.ExecutionModeLima, Runtime: protocol.Runtime{Kind: "http"}, Model: protocol.Model{ID: "model"}}, &servingPlan{Endpoint: endpoint, API: "openai", ServedModel: "model", RequestTimeout: 2, ReadinessTimeout: 1, SampleInterval: .1, Targets: servingTargets{TTFTMS: 1000, TPOTMS: 1000}, Cases: []servingCase{{ID: "load", Scenario: "load", Concurrency: 2, Requests: 3, OutputTokens: 16, WarmupRequests: 1, Prompts: []servingPrompt{{ID: "json", Text: "Return JSON", Expect: &servingChecks{JSON: true, JSONSubset: json.RawMessage(`{"answer":4}`)}}}}}})
 }
 
 func streamJSON(w http.ResponseWriter, value any) {
@@ -44,8 +44,8 @@ func TestServingRunPersistsTimingQualityAndPrivateEvidence(t *testing.T) {
 	t.Setenv("MODELGAUGE_INFERENCE_TOKEN", "inference-secret")
 	var requests atomic.Int32
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer inference-secret" {
-			t.Error("missing inference authentication")
+		if r.Header.Get("Authorization") != "" {
+			t.Error("unrelated credentials leaked to the local model process")
 		}
 		if r.URL.Path == "/v1/models" {
 			fmt.Fprint(w, `{}`)
@@ -63,7 +63,7 @@ func TestServingRunPersistsTimingQualityAndPrivateEvidence(t *testing.T) {
 	plan := servingFixture(server.URL)
 	config := servingConfig(plan)
 	dir := filepath.Join(t.TempDir(), "run")
-	result, _, err := Run(context.Background(), servingPlanWithConfig(plan, config), dir)
+	result, _, err := runServingPlan(context.Background(), servingPlanWithConfig(plan, config), Options{OutputDir: dir})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -86,16 +86,16 @@ func TestServingRunPersistsTimingQualityAndPrivateEvidence(t *testing.T) {
 			t.Fatal("credential or unrequested answer persisted")
 		}
 	}
-	if _, _, err = Run(context.Background(), servingPlanWithConfig(plan, config), dir); err == nil {
+	if _, _, err = runServingPlan(context.Background(), servingPlanWithConfig(plan, config), Options{OutputDir: dir}); err == nil {
 		t.Fatal("existing output overwritten")
 	}
 	count := requests.Load()
-	resumed, _, err := RunWithOptions(context.Background(), servingPlanWithConfig(plan, config), Options{RunID: result.RunID, OutputDir: dir, Resume: true})
-	if err != nil || len(servingResult(resumed).Cases) != 1 || requests.Load() != count {
-		t.Fatal("completed serving case was replayed:", err)
+	resumed, _, err := runServingPlan(context.Background(), servingPlanWithConfig(plan, config), Options{RunID: result.RunID, OutputDir: dir, Resume: true})
+	if err != nil || len(servingResult(resumed).Cases) != 1 || requests.Load() != count+4 {
+		t.Fatal("serving cases must be remeasured after process recovery:", err)
 	}
 	var output bytes.Buffer
-	if err = WriteServingCSV(&output, []protocol.Result{result}); err != nil {
+	if err = writeServingCSV(&output, []protocol.Result{result}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := csv.NewReader(&output).ReadAll()
@@ -129,7 +129,7 @@ func TestServingMissingUsageIncompleteAndNativeTokenBoundaries(t *testing.T) {
 			}
 			client := newServingClient(*config)
 			defer client.close()
-			r := client.complete(context.Background(), config.Cases[0], ServingPrompt{Text: "hi"}, nil, nil)
+			r := client.complete(context.Background(), config.Cases[0], servingPrompt{Text: "hi"}, nil, nil)
 			if kind == "incomplete" {
 				if r.Status != "incomplete" {
 					t.Fatal(r)
@@ -168,7 +168,7 @@ func TestServingArrivalRateAccountsForClientDrops(t *testing.T) {
 	config := servingConfig(plan)
 	c := &config.Cases[0]
 	c.Concurrency, c.Requests, c.RequestRate, c.WarmupRequests = 1, 10, 1000, 0
-	result, _, err := Run(context.Background(), servingPlanWithConfig(plan, config), filepath.Join(t.TempDir(), "run"))
+	result, _, err := runServingPlan(context.Background(), servingPlanWithConfig(plan, config), Options{OutputDir: filepath.Join(t.TempDir(), "run")})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -196,7 +196,7 @@ func TestServingCancellationPreservesEvidenceAndReleasesClient(t *testing.T) {
 	config := servingConfig(plan)
 	c := &config.Cases[0]
 	c.Concurrency, c.Requests, c.WarmupRequests, c.CancelAfterMS = 1, 2, 0, 10
-	result, _, err := Run(context.Background(), servingPlanWithConfig(plan, config), filepath.Join(t.TempDir(), "probe"))
+	result, _, err := runServingPlan(context.Background(), servingPlanWithConfig(plan, config), Options{OutputDir: filepath.Join(t.TempDir(), "probe")})
 	if err != nil || servingResult(result).Cases[0].Cancelled != 2 || servingResult(result).Cases[0].CancelAckMS == nil {
 		t.Fatal(result, err)
 	}
@@ -204,7 +204,7 @@ func TestServingCancellationPreservesEvidenceAndReleasesClient(t *testing.T) {
 	ctx, cancel := context.WithTimeout(context.Background(), 20*time.Millisecond)
 	defer cancel()
 	dir := filepath.Join(t.TempDir(), "interrupted")
-	result, _, err = Run(ctx, servingPlanWithConfig(plan, config), dir)
+	result, _, err = runServingPlan(ctx, servingPlanWithConfig(plan, config), Options{OutputDir: dir})
 	if err == nil || result.Status != protocol.RunStatusCancelled || servingResult(result) == nil {
 		t.Fatal("interruption lost partial report:", result, err)
 	}
@@ -228,12 +228,12 @@ func TestServingMetricsAndQualityChecks(t *testing.T) {
 			t.Fatal("private labels/nonfinite value retained")
 		}
 	}
-	check := ServingChecks{JSON: true, JSONSubset: json.RawMessage(`{"a":1}`)}
+	check := servingChecks{JSON: true, JSONSubset: json.RawMessage(`{"a":1}`)}
 	if len(checkServingOutput(`{"a":1,"b":2}`, nil, check)) != 0 || len(checkServingOutput(`{"a":2}`, nil, check)) == 0 {
 		t.Fatal("JSON quality checks incorrect")
 	}
-	check = ServingChecks{ToolCalls: []ServingToolCall{{Name: "lookup", Arguments: json.RawMessage(`{"id":4}`)}}}
-	if len(checkServingOutput("", []ServingToolCall{{Name: "lookup", Arguments: json.RawMessage(`{"id":4}`)}}, check)) != 0 || len(checkServingOutput("", nil, check)) == 0 {
+	check = servingChecks{ToolCalls: []servingToolCall{{Name: "lookup", Arguments: json.RawMessage(`{"id":4}`)}}}
+	if len(checkServingOutput("", []servingToolCall{{Name: "lookup", Arguments: json.RawMessage(`{"id":4}`)}}, check)) != 0 || len(checkServingOutput("", nil, check)) == 0 {
 		t.Fatal("tool argument correctness not checked")
 	}
 	d := distribution([]float64{1, 2, 3, 4, 5})
@@ -270,7 +270,7 @@ func TestServingAgentInterruptionResumesUnfinishedCase(t *testing.T) {
 	go func() { <-entered; cancel() }()
 	dir := filepath.Join(t.TempDir(), "agent-run")
 	options := Options{RunID: "run-agent", OutputDir: dir, Resume: true}
-	if _, _, err := RunWithOptions(ctx, servingPlanWithConfig(plan, config), options); err == nil {
+	if _, _, err := runServingPlan(ctx, servingPlanWithConfig(plan, config), options); err == nil {
 		t.Fatal("interrupted execution succeeded")
 	}
 	if _, err := os.Stat(filepath.Join(dir, "result.json")); !os.IsNotExist(err) {
@@ -281,7 +281,7 @@ func TestServingAgentInterruptionResumesUnfinishedCase(t *testing.T) {
 		t.Fatal("missing interrupted evidence", evidence, err)
 	}
 	block.Store(false)
-	result, _, err := RunWithOptions(context.Background(), servingPlanWithConfig(plan, config), options)
+	result, _, err := runServingPlan(context.Background(), servingPlanWithConfig(plan, config), options)
 	if err != nil || result.Status != protocol.RunStatusCompleted || servingResult(result).Cases[0].Successful != 1 {
 		t.Fatal("unfinished case was not rerun", result, err)
 	}
@@ -296,7 +296,7 @@ func TestServingConversationUsesAndResetsHistory(t *testing.T) {
 			return
 		}
 		var request struct {
-			Messages []ServingMessage `json:"messages"`
+			Messages []servingMessage `json:"messages"`
 		}
 		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
 			t.Error(err)
@@ -312,8 +312,8 @@ func TestServingConversationUsesAndResetsHistory(t *testing.T) {
 	config := servingConfig(plan)
 	c := &config.Cases[0]
 	c.Requests, c.Concurrency, c.WarmupRequests, c.ContinueConversation = 4, 1, 0, true
-	c.Prompts = []ServingPrompt{{Text: "Remember four"}, {Text: "Recall it"}}
-	if _, _, err := Run(context.Background(), servingPlanWithConfig(plan, config), filepath.Join(t.TempDir(), "conversation")); err != nil {
+	c.Prompts = []servingPrompt{{Text: "Remember four"}, {Text: "Recall it"}}
+	if _, _, err := runServingPlan(context.Background(), servingPlanWithConfig(plan, config), Options{OutputDir: filepath.Join(t.TempDir(), "conversation")}); err != nil {
 		t.Fatal(err)
 	}
 	if turns.Load() != 4 {
@@ -381,7 +381,7 @@ func TestServingMetricsAuthAndRedirectsDoNotLeakInferenceToken(t *testing.T) {
 	if err != nil || sampler.sample(context.Background()).Values["server:llamacpp:requests_processing"] != 2 {
 		t.Fatal(err)
 	}
-	_, err = client.request(context.Background(), "GET", redirect.URL, "private-inference-token", nil)
+	_, err = client.request(context.Background(), "GET", redirect.URL, nil)
 	if err == nil || visits.Load() != 1 {
 		t.Fatal("redirect followed and risked exposing credentials", err, visits.Load())
 	}
@@ -427,7 +427,7 @@ func TestServingTimeoutHTTPFailureAndInvalidToolArguments(t *testing.T) {
 			config.RequestTimeout, config.RecordOutputs = .05, true
 			client := newServingClient(*config)
 			defer client.close()
-			prompt := ServingPrompt{Text: "Call lookup", Expect: &ServingChecks{ToolCalls: []ServingToolCall{{Name: "lookup", Arguments: json.RawMessage(`{}`)}}}}
+			prompt := servingPrompt{Text: "Call lookup", Expect: &servingChecks{ToolCalls: []servingToolCall{{Name: "lookup", Arguments: json.RawMessage(`{}`)}}}}
 			r := client.complete(context.Background(), config.Cases[0], prompt, nil, nil)
 			data, err := json.Marshal(r)
 			if err != nil || strings.Contains(string(data), "private server error body") {
@@ -451,21 +451,21 @@ func TestServingTimeoutHTTPFailureAndInvalidToolArguments(t *testing.T) {
 	}
 }
 
-func servingPlanWithConfig(plan protocol.Plan, config *ServingPlan) protocol.Plan {
-	if err := SetConfig(&plan, "serving", config); err != nil {
+func servingPlanWithConfig(plan protocol.Plan, config *servingPlan) protocol.Plan {
+	if err := setConfig(&plan, "serving", config); err != nil {
 		panic(err)
 	}
 	return plan
 }
-func servingConfig(plan protocol.Plan) *ServingPlan {
-	config, err := DecodeServingPlan(plan)
+func servingConfig(plan protocol.Plan) *servingPlan {
+	config, err := decodeServingPlan(plan)
 	if err != nil {
 		panic(err)
 	}
 	return config
 }
-func servingResult(result protocol.Result) *ServingReport {
-	report, err := DecodeServingReport(result)
+func servingResult(result protocol.Result) *servingReport {
+	report, err := decodeServingReport(result)
 	if err != nil {
 		return nil
 	}

@@ -15,6 +15,10 @@ import (
 func TestNewBenchmarkNeedsOnlyRegistration(t *testing.T) {
 	const kind = "test-benchmark"
 	implementations[kind] = implementation{
+		profile: "test-profile",
+		plan: func(ctx context.Context, options planOptions, config json.RawMessage) ([]protocol.Plan, error) {
+			return []protocol.Plan{{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: options.NodeID, ExecutionMode: options.ExecutionMode, Model: protocol.Model{ID: options.ModelID}, Benchmark: &protocol.BenchmarkSpec{Kind: kind, Config: config}}}, ctx.Err()
+		},
 		validate: func(plan protocol.Plan) error {
 			var config struct {
 				Samples int `json:"samples"`
@@ -55,6 +59,10 @@ func TestNewBenchmarkNeedsOnlyRegistration(t *testing.T) {
 		},
 	}
 	t.Cleanup(func() { delete(implementations, kind) })
+	generated, err := newPlans(context.Background(), "test-profile", planOptions{NodeID: "test", ExecutionMode: protocol.ExecutionModeLima, ModelID: "test"}, json.RawMessage(`{"samples":1}`))
+	if err != nil || len(generated) != 1 || !strings.Contains(strings.Join(Profiles(), ","), "test-profile") {
+		t.Fatal("module planning required platform changes", generated, err)
+	}
 	plan := protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: "test", ExecutionMode: protocol.ExecutionModeLima, Model: protocol.Model{ID: "test"}, Benchmark: &protocol.BenchmarkSpec{Kind: kind, Config: json.RawMessage(`{"samples":1}`)}}
 	// Same JSON transport used by the CLI, queue and agent.
 	data, err := json.Marshal(plan)
@@ -65,7 +73,7 @@ func TestNewBenchmarkNeedsOnlyRegistration(t *testing.T) {
 	if err = json.Unmarshal(data, &transported); err != nil {
 		t.Fatal(err)
 	}
-	result, dir, err := RunWithOptions(context.Background(), transported, Options{RunID: "test-run", OutputDir: "evidence"})
+	result, dir, err := Run(context.Background(), transported, Options{RunID: "test-run", OutputDir: "evidence"})
 	if err != nil || dir != "evidence" || result.Benchmark == nil {
 		t.Fatal(result, dir, err)
 	}
@@ -90,10 +98,13 @@ func TestNewBenchmarkNeedsOnlyRegistration(t *testing.T) {
 	}
 	ctx, cancel := context.WithCancel(context.Background())
 	cancel()
-	if _, _, err = RunWithOptions(ctx, transported, Options{}); !errors.Is(err, context.Canceled) {
+	if _, _, err = Run(ctx, transported, Options{}); !errors.Is(err, context.Canceled) {
 		t.Fatal("context not passed to benchmark", err)
 	}
 	delete(implementations, kind)
+	if _, err := newPlans(context.Background(), "test-profile", planOptions{}, json.RawMessage(`{}`)); err == nil {
+		t.Fatal("removed profile still available")
+	}
 	if ValidatePlan(transported) == nil {
 		t.Fatal("removed benchmark still accepted jobs")
 	}
@@ -143,9 +154,14 @@ func TestEngineResumeAcceptsRuntimeDiscoveredByOlderAgent(t *testing.T) {
 
 func TestServingMetricsAreOwnedByModuleAndOmitUnknownValues(t *testing.T) {
 	var out strings.Builder
-	writeServingMetrics(&out, "node", "lima-linux", "model", ServingReport{Cases: []ServingCaseResult{{ID: "load", Concurrency: 1, Scenario: "load", Successful: 1, RequestsPerSecond: 2, TTFTMS: &Distribution{Count: 1, Mean: 1000, P95: 1000}}}})
+	writeServingMetrics(&out, "node", "lima-linux", "model", servingReport{Cases: []servingCaseResult{{ID: "load", Concurrency: 1, Scenario: "load", Successful: 1, RequestsPerSecond: 2, TTFTMS: &distributionStats{Count: 1, Mean: 1000, P95: 1000}}}})
 	text := out.String()
 	if !strings.Contains(text, `measurement="ttft"`) || strings.Contains(text, "modelgauge_serving_output_tokens_per_second{") || strings.Contains(text, "modelgauge_serving_sampled_peak_rss_bytes{") {
 		t.Fatal(text)
+	}
+	out.Reset()
+	writeServingMetrics(&out, "node", "lima-linux", "model", servingReport{StartupMS: floatPointer(250), ShutdownMS: floatPointer(100)})
+	if !strings.Contains(out.String(), "modelgauge_serving_process_start_to_ready_seconds{") || !strings.Contains(out.String(), "} 0.25\n") || !strings.Contains(out.String(), "modelgauge_serving_process_shutdown_seconds{") {
+		t.Fatal(out.String())
 	}
 }

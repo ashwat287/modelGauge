@@ -47,7 +47,7 @@ func runAgent(ctx context.Context, args []string, stdout, stderr interface{ Writ
 	}
 	config, err := agent.ConfigFromEnv(os.Getenv)
 	if err != nil {
-		fmt.Fprintf(stderr, "agent configuration: %v\n", err)
+		fmt.Fprintf(stderr, "executor configuration: %v\n", err)
 		return 2
 	}
 	if err := agent.EnsureResultsDir(config.ResultsDir); err != nil {

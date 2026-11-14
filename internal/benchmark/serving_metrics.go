@@ -17,9 +17,19 @@ const servingMetricsHeader = `# HELP modelgauge_serving_requests Request outcome
 # TYPE modelgauge_serving_quality_pass_ratio gauge
 # TYPE modelgauge_serving_sampled_peak_rss_bytes gauge
 # TYPE modelgauge_serving_cpu_package_energy_joules gauge
+# TYPE modelgauge_serving_process_start_to_ready_seconds gauge
+# TYPE modelgauge_serving_process_shutdown_seconds gauge
 `
 
-func writeServingMetrics(out *strings.Builder, node, mode, model string, report ServingReport) {
+func writeServingMetrics(out *strings.Builder, node, mode, model string, report servingReport) {
+	for _, field := range []struct {
+		name  string
+		value *float64
+	}{{"start_to_ready", report.StartupMS}, {"shutdown", report.ShutdownMS}} {
+		if field.value != nil && finite(*field.value) {
+			fmt.Fprintf(out, "modelgauge_serving_process_%s_seconds{node=%q,mode=%q,model=%q} %g\n", field.name, node, mode, model, *field.value/1000)
+		}
+	}
 	for _, c := range report.Cases {
 		labels := fmt.Sprintf("node=%q,mode=%q,model=%q,case=%q,scenario=%q,concurrency=%q,context=%q", node, mode, model, c.ID, c.Scenario, fmt.Sprint(c.Concurrency), fmt.Sprint(c.TargetPromptTokens))
 		write := func(name, extra string, value float64) {
@@ -44,7 +54,7 @@ func writeServingMetrics(out *strings.Builder, node, mode, model string, report 
 		}
 		for _, field := range []struct {
 			name  string
-			value *Distribution
+			value *distributionStats
 		}{{"e2e", c.LatencyMS}, {"ttft", c.TTFTMS}, {"first_answer", c.FirstAnswerMS}, {"tpot", c.TPOTMS}, {"stream_chunk_gap", c.ChunkGapMS}, {"observed_token_gap", c.ITLMS}, {"longest_stream_stall", c.LongestStallMS}, {"dispatch_delay", c.DispatchDelayMS}, {"scheduled", c.ScheduledLatencyMS}, {"client_cancel_ack", c.CancelAckMS}} {
 			if field.value == nil {
 				continue

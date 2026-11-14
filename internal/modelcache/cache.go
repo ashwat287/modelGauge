@@ -34,8 +34,6 @@ type inventoryEntry struct {
 	SHA256   string `json:"sha256"`
 }
 
-func Discover() ([]Model, error) { return DiscoverContext(context.Background()) }
-
 func DiscoverContext(ctx context.Context) ([]Model, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -89,7 +87,7 @@ func DiscoverContext(ctx context.Context) ([]Model, error) {
 			if ok && prior.Size == fingerprint.Size && prior.Modified == fingerprint.Modified && validInventorySHA(prior.SHA256) {
 				fingerprint.SHA256 = prior.SHA256
 			} else {
-				fingerprint.SHA256, err = checksumContext(ctx, path)
+				fingerprint.SHA256, err = platform.SHA256File(ctx, path)
 				if err != nil {
 					return nil, err
 				}
@@ -130,20 +128,6 @@ func validInventorySHA(value string) bool {
 	return err == nil
 }
 
-func checksum(path string) (string, error) { return checksumContext(context.Background(), path) }
-func checksumContext(ctx context.Context, path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, contextReader{ctx, file}); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
 func DiscoverLlamaBench() (string, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -161,10 +145,6 @@ func DiscoverLlamaBench() (string, error) {
 		return path, nil
 	}
 	return "", os.ErrNotExist
-}
-
-func Install(id, sourceURL, expectedSHA string) (Model, error) {
-	return InstallContext(context.Background(), id, sourceURL, expectedSHA)
 }
 
 func InstallContext(ctx context.Context, id, sourceURL, expectedSHA string) (Model, error) {
@@ -192,7 +172,7 @@ func installAt(ctx context.Context, id, sourceURL, expectedSHA, directory string
 	}
 	finalPath := filepath.Join(directory, id+".gguf")
 	if expectedSHA != "" {
-		if digest, err := checksumContext(ctx, finalPath); err == nil && strings.EqualFold(digest, expectedSHA) {
+		if digest, err := platform.SHA256File(ctx, finalPath); err == nil && strings.EqualFold(digest, expectedSHA) {
 			info, err := os.Stat(finalPath)
 			if err != nil {
 				return Model{}, err
@@ -205,7 +185,7 @@ func installAt(ctx context.Context, id, sourceURL, expectedSHA, directory string
 	}
 	partialPath := finalPath + ".part"
 	if expectedSHA != "" {
-		if digest, err := checksumContext(ctx, partialPath); err == nil && strings.EqualFold(digest, expectedSHA) {
+		if digest, err := platform.SHA256File(ctx, partialPath); err == nil && strings.EqualFold(digest, expectedSHA) {
 			if err = os.Rename(partialPath, finalPath); err != nil {
 				return Model{}, err
 			}
@@ -287,7 +267,7 @@ func installAt(ctx context.Context, id, sourceURL, expectedSHA, directory string
 	if closeErr != nil {
 		return Model{}, closeErr
 	}
-	digest, err := checksumContext(ctx, partialPath)
+	digest, err := platform.SHA256File(ctx, partialPath)
 	if err != nil {
 		return Model{}, err
 	}
@@ -304,16 +284,4 @@ func installAt(ctx context.Context, id, sourceURL, expectedSHA, directory string
 		return Model{}, err
 	}
 	return Model{ID: id, SHA256: digest, SizeBytes: info.Size(), Path: finalPath}, nil
-}
-
-type contextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }

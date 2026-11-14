@@ -6,9 +6,33 @@
 ```sh
 bin/modelgauge benchmark cancel PLAN_ID
 bin/modelgauge model install cancel JOB_ID
-bin/modelgauge benchmark campaign status --file campaign.json
+bin/modelgauge status -f benchmark.yaml
 bin/modelgauge results show --node benchmark-node
 ```
+
+For managed Lima nodes the execution module runs inside the controller. Connections
+and journals live on its persistent volume, under `/var/lib/modelgauge/connections`
+and `/var/lib/modelgauge/runs/NODE`. Raw files and stage checkpoints stay in the VM.
+The executor sends a plan over pinned SSH to a temporary systemd worker. Keepalives
+every five seconds authorize execution; EOF or twenty seconds without one cancels
+it. Systemd owns all descendants and imposes a 24-hour hard deadline.
+
+The `deployment` profile holds one lock across every stage. It waits for llama-bench
+to exit before starting llama-server, then stops/reaps each server before the next
+stage. Failure/cancellation prevents later stages. Within a valid lease, completed
+stages are reused and unfinished serving stages start with a fresh process. A
+completed result is returned for upload retries without starting another runtime.
+Connection interruption retains pending work. Uploading a saved complete result
+does not require the node to remain reachable.
+
+Controller replacement restores its connections/journals from the PVC. Upgrades and
+cleanup pause the relevant controller workers and refuse pending work. Control
+upgrades preserve queued jobs only after every registered executor is confirmed
+paused; leased/running jobs still block upgrades. If the controller is unreachable
+or any node lacks a managed connection, the stricter queued-job guard remains. Pauses are
+persistent across restarts. A failed connection change retains its recovery state.
+
+The remaining agent protocol also applies to legacy manual Linux installations.
 
 The controller serializes claims on each node row across benchmark and model
 installation queues. A node cannot claim another job while it owns an active
@@ -85,3 +109,25 @@ A second agent process on the same node was refused by the host lock. Plan
 the measured process stopped and its stored reason was `cancelled by user`.
 The GNU-time-style wrapper/child cancellation test passed inside Linux.
 These runs validate lifecycle behavior rather than sustained throughput.
+
+## Unreachable Lima node
+
+SSH transport failures mark the node offline. A heartbeat older than 90 seconds
+also appears offline; `last_seen_at` remains the actual last contact time. Inspect
+`modelgauge node status NODE` for the current executor address and connection error.
+Identical retry errors are logged at most once per minute; retries continue every
+five seconds.
+
+If Lima’s SSH forward returns EOF or refuses connections, restart the benchmark
+VM while no benchmark is active, then refresh its connection:
+
+```sh
+limactl stop NODE
+limactl start NODE
+modelgauge node reconnect --name NODE
+modelgauge node status NODE
+```
+
+Reconnect preserves installed models and queued plans. It refuses active or
+pending work rather than discarding a recovery journal. A fixed port prevents
+port reallocation on new VMs; it does not guarantee that Lima’s forward cannot fail.

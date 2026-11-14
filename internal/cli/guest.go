@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/agent"
 	"github.com/nerdylucifer/modelgauge/internal/guest"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"io"
@@ -13,6 +14,49 @@ import (
 
 // Internal Linux protocol. JSON and tar stdout never contain human banners.
 func runGuest(ctx context.Context, args []string, out, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "controller-key-commit" {
+		runtime, err := guest.NewRuntime()
+		if err == nil {
+			err = runtime.CommitControllerKey()
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) == 1 && args[0] == "controller-key" {
+		runtime, err := guest.NewRuntime()
+		if err == nil {
+			var key []byte
+			key, err = io.ReadAll(io.LimitReader(os.Stdin, 8193))
+			if err == nil && len(key) > 8192 {
+				err = fmt.Errorf("SSH public key too large")
+			}
+			if err == nil {
+				err = runtime.InstallControllerKey(ctx, key)
+			}
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) == 1 && args[0] == "connection" {
+		if err := agent.RunSSHCommand(ctx, os.Getenv("SSH_ORIGINAL_COMMAND"), os.Stdin, out, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
+	if len(args) == 1 && args[0] == "worker" {
+		if err := agent.RunWorker(ctx, os.Stdin, out); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 2 && args[0] == "remove-file" {
 		runtime, err := guest.NewRuntime()
 		if err == nil {

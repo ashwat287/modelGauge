@@ -21,15 +21,11 @@ import (
 )
 
 func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (result protocol.Result, outputDir string, resultErr error) {
-	serving, err := DecodeServingPlan(plan)
+	serving, err := decodeServingPlan(plan)
 	if err != nil {
 		return result, "", err
 	}
-	unlock, err := platform.Lock("execution")
-	if err != nil {
-		return result, "", err
-	}
-	defer unlock()
+
 	outputDir = options.OutputDir
 	runID := options.RunID
 	if runID == "" {
@@ -63,20 +59,12 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 	if err = platform.WriteJSON(planFile, plan, 0600); err != nil {
 		return result, outputDir, err
 	}
-	report := &ServingReport{SchemaVersion: "modelgauge-serving/v1", ModelID: plan.Model.ID, Targets: serving.Targets, Endpoint: serving.Endpoint, API: serving.API, ServedModel: serving.ServedModel, StartedAt: time.Now().UTC(), Settings: serving.RuntimeSettings, Cases: []ServingCaseResult{}, Warnings: []string{"Client latency includes transport and queueing. Streaming chunk boundaries are not assumed to be individual tokens.", "Operator runtime settings and model identity are declarations; this endpoint-only runner does not reconfigure or attest the server."}, Unavailable: []string{"cold process/model load and unload timing (endpoint lifecycle is externally managed)", "per-request server queue time unless independently exposed by the endpoint", "physical-host thermal, battery and power-mode control", "memory bandwidth and general-purpose semantic answer grading"}}
-	if serving.LocalPID == 0 {
+	report := &servingReport{SchemaVersion: "modelgauge-serving/v1", ModelID: plan.Model.ID, Targets: serving.Targets, Endpoint: serving.Endpoint, API: serving.API, ServedModel: serving.ServedModel, StartedAt: time.Now().UTC(), Settings: serving.RuntimeSettings, Cases: []servingCaseResult{}, Warnings: []string{"Client latency includes queueing and local load-generator overhead. Streaming chunk boundaries are not assumed to be individual tokens."}, Unavailable: []string{"per-request backend queue time unless exposed by the runtime", "physical-host sensors hidden by a VM", "memory bandwidth and general semantic grading"}}
+	if serving.Server == nil && serving.LocalPID == 0 {
 		report.Unavailable = append(report.Unavailable, "local process RSS/PSS/CPU, node power and GPU sensors: no local_server_pid supplied")
 	}
-	if serving.MetricsURL == "" {
+	if serving.Server == nil && serving.MetricsURL == "" {
 		report.Unavailable = append(report.Unavailable, "server queue, KV-cache and backend metrics: no metrics_url supplied")
-	}
-	if recovered {
-		data, e := os.ReadFile(filepath.Join(outputDir, "serving-summary.json"))
-		var previous ServingReport
-		if e == nil && json.Unmarshal(data, &previous) == nil && !previous.StartedAt.IsZero() {
-			report.StartedAt = previous.StartedAt
-		}
-		report.Warnings = append(report.Warnings, "Completed cases may be reused; externally managed endpoint identity cannot be guaranteed unchanged across an interruption.")
 	}
 	result = protocol.Result{SchemaVersion: resultSchemaV1, RunID: runID, PlanID: plan.PlanID, NodeID: plan.NodeID, ExecutionMode: plan.ExecutionMode, Status: protocol.RunStatusRunning, StartedAt: report.StartedAt, RuntimeMetadata: map[string]string{"benchmark_kind": "serving", "recovered": fmt.Sprint(recovered), "client_goos": runtime.GOOS, "client_goarch": runtime.GOARCH, "benchmark_version": buildinfo.Version, "benchmark_commit": buildinfo.Commit}}
 	defer func() {
@@ -116,10 +104,66 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 		}
 		resultErr = errors.Join(resultErr, platform.WriteJSON(filepath.Join(outputDir, resultFile), result, 0600))
 	}()
+	var server *modelServer
+	if serving.Server != nil {
+		if runtime.GOOS != "linux" {
+			return result, outputDir, errors.New("managed model benchmarks execute on the Linux benchmark node; submit this plan through the controller")
+		}
+		if recovered {
+			for _, name := range []string{"model-server.log", "runtime.sha256"} {
+				path := filepath.Join(outputDir, name)
+				if _, e := os.Lstat(path); e == nil {
+					if e = os.Rename(path, path+".interrupted-"+time.Now().UTC().Format("20060102T150405.000000000")); e != nil {
+						return result, outputDir, e
+					}
+				} else if !os.IsNotExist(e) {
+					return result, outputDir, e
+				}
+			}
+		}
+		server, err = startModelServer(ctx, plan, serving, outputDir)
+		if err != nil {
+			return result, outputDir, err
+		}
+		defer func() {
+			stopped := time.Now()
+			resultErr = errors.Join(resultErr, server.stop())
+			report.ShutdownMS = floatPointer(milliseconds(time.Since(stopped)))
+		}()
+		report.Endpoint, report.Settings = serving.Endpoint, serving.RuntimeSettings
+		report.Warnings = []string{"Measured on the benchmark node: the load generator shares CPU and memory with the model process.", "Stream chunks are not necessarily individual tokens. Process startup includes model loading and runtime initialization, not an isolated cold-disk load."}
+		report.Unavailable = []string{"physical-host sensors and power hidden by a VM", "per-request server queue time unless exposed by the runtime", "memory bandwidth and general semantic grading"}
+		if recovered {
+			report.Warnings = append(report.Warnings, "A new model process was started after interruption; all cases are rerun to avoid combining different process/cache states.")
+		}
+		result.RuntimeMetadata["model_sha256"] = plan.Model.SHA256
+	}
+
 	client := newServingClient(*serving)
 	defer client.close()
-	if report.ReadinessWaitMS, err = client.ready(ctx); err != nil {
+	readyCtx, cancelReady := context.WithCancel(ctx)
+	defer cancelReady()
+	if server != nil {
+		go func() {
+			select {
+			case <-server.done:
+				cancelReady()
+			case <-readyCtx.Done():
+			}
+		}()
+	}
+	if report.ReadinessWaitMS, err = client.ready(readyCtx); err != nil {
+		if server != nil {
+			err = errors.Join(err, server.running())
+		}
 		return result, outputDir, err
+	}
+	cancelReady()
+	if server != nil {
+		report.StartupMS = floatPointer(milliseconds(time.Since(server.startedAt)))
+		if err = server.running(); err != nil {
+			return result, outputDir, err
+		}
 	}
 	if _, err = newServingSampler(client); err != nil {
 		return result, outputDir, err
@@ -130,13 +174,7 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 		}
 		checkpoint := filepath.Join(outputDir, spec.ID+".summary.json")
 		if recovered {
-			data, err := os.ReadFile(checkpoint)
-			var previous ServingCaseResult
-			if err == nil && json.Unmarshal(data, &previous) == nil && previous.ID == spec.ID && previous.ElapsedSeconds > 0 {
-				report.Cases = append(report.Cases, previous)
-				continue
-			}
-			for _, suffix := range []string{".requests.jsonl", ".warmup.jsonl", ".resources.jsonl"} {
+			for _, suffix := range []string{".requests.jsonl", ".warmup.jsonl", ".resources.jsonl", ".summary.json"} {
 				name := filepath.Join(outputDir, spec.ID+suffix)
 				if _, err = os.Lstat(name); err == nil {
 					if err = os.Rename(name, name+".interrupted-"+time.Now().UTC().Format("20060102T150405.000000000")); err != nil {
@@ -145,10 +183,20 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 				}
 			}
 		}
+		if server != nil {
+			if err := server.running(); err != nil {
+				return result, outputDir, err
+			}
+		}
 		measured, err := client.runCase(ctx, spec, outputDir)
 		report.Cases = append(report.Cases, measured)
 		if err != nil {
 			return result, outputDir, fmt.Errorf("serving case %s: %w", spec.ID, err)
+		}
+		if server != nil {
+			if err := server.running(); err != nil {
+				return result, outputDir, err
+			}
 		}
 		if err = platform.WriteJSON(checkpoint, measured, 0600); err != nil {
 			return result, outputDir, err
@@ -186,8 +234,8 @@ func (w *servingLog) close() error {
 	return errors.Join(syncErr, w.file.Close())
 }
 
-func (client *servingClient) runCase(parent context.Context, spec ServingCase, dir string) (summary ServingCaseResult, resultErr error) {
-	summary = ServingCaseResult{ID: spec.ID, Scenario: spec.Scenario, Concurrency: spec.Concurrency, StartedAt: time.Now().UTC(), Warnings: []string{}}
+func (client *servingClient) runCase(parent context.Context, spec servingCase, dir string) (summary servingCaseResult, resultErr error) {
+	summary = servingCaseResult{ID: spec.ID, Scenario: spec.Scenario, Concurrency: spec.Concurrency, StartedAt: time.Now().UTC(), Warnings: []string{}}
 	if err := waitServing(parent, seconds(spec.IdleBeforeSeconds)); err != nil {
 		return summary, err
 	}
@@ -198,10 +246,10 @@ func (client *servingClient) runCase(parent context.Context, spec ServingCase, d
 		if err != nil {
 			return summary, err
 		}
-		prompts, tokens = []ServingPrompt{p}, ids
+		prompts, tokens = []servingPrompt{p}, ids
 	}
 	if len(prompts) == 0 {
-		prompts = []ServingPrompt{{ID: "default", Text: "Explain in a few sentences how a computer processes information."}}
+		prompts = []servingPrompt{{ID: "default", Text: "Explain in a few sentences how a computer processes information."}}
 	}
 	warmup, err := newServingLog(filepath.Join(dir, spec.ID+".warmup.jsonl"))
 	if err != nil {
@@ -311,7 +359,7 @@ func (client *servingClient) runCase(parent context.Context, spec ServingCase, d
 			workers.Add(1)
 			go func(worker int) {
 				defer workers.Done()
-				var history []ServingMessage
+				var history []servingMessage
 				turn := 0
 				for {
 					if ctx.Err() != nil || spec.DurationSeconds > 0 && time.Since(started).Seconds() >= spec.DurationSeconds {
@@ -334,9 +382,9 @@ func (client *servingClient) runCase(parent context.Context, spec ServingCase, d
 						if len(p.Messages) > 0 {
 							history = append(history, p.Messages...)
 						} else {
-							history = append(history, ServingMessage{Role: "user", Content: p.Text})
+							history = append(history, servingMessage{Role: "user", Content: p.Text})
 						}
-						history = append(history, ServingMessage{Role: "assistant", Content: r.content})
+						history = append(history, servingMessage{Role: "assistant", Content: r.content})
 					}
 					turn++
 					record(r)
@@ -404,8 +452,8 @@ func (client *servingClient) runCase(parent context.Context, spec ServingCase, d
 	if spec.RecoveryProbe && parent.Err() == nil {
 		probeSpec := spec
 		probeSpec.CancelAfterMS, probeSpec.OutputTokens = 0, min(8, spec.OutputTokens)
-		probe := client.complete(parent, probeSpec, ServingPrompt{ID: "post-load-probe", Text: "Say hello."}, nil, nil)
-		summary.RecoveryProbe = &ServingProbe{Successful: probe.Status == "successful", LatencyMS: probe.LatencyMS, Error: probe.Error}
+		probe := client.complete(parent, probeSpec, servingPrompt{ID: "post-load-probe", Text: "Say hello."}, nil, nil)
+		summary.RecoveryProbe = &servingProbe{Successful: probe.Status == "successful", LatencyMS: probe.LatencyMS, Error: probe.Error}
 		if err = requests.write(map[string]any{"recovery_probe": probe}); err != nil {
 			resultErr = err
 		}
@@ -413,13 +461,13 @@ func (client *servingClient) runCase(parent context.Context, spec ServingCase, d
 	return summary, errors.Join(resultErr, context.Cause(ctx), writeErr, sampleErr)
 }
 
-func distribution(values []float64) *Distribution {
+func distribution(values []float64) *distributionStats {
 	if len(values) == 0 {
 		return nil
 	}
 	ordered := append([]float64(nil), values...)
 	sort.Float64s(ordered)
-	d := &Distribution{Count: len(values), Min: ordered[0], Max: ordered[len(ordered)-1]}
+	d := &distributionStats{Count: len(values), Min: ordered[0], Max: ordered[len(ordered)-1]}
 	for _, v := range values {
 		d.Mean += v / float64(len(values))
 	}
@@ -434,8 +482,8 @@ func distribution(values []float64) *Distribution {
 	return d
 }
 
-func summarizeServingCase(spec ServingCase, plan ServingPlan, records []servingRequest, started time.Time, elapsed, dispatch float64) ServingCaseResult {
-	r := ServingCaseResult{ID: spec.ID, Scenario: spec.Scenario, Concurrency: spec.Concurrency, TargetPromptTokens: spec.PromptTokens, MaxOutputTokens: spec.OutputTokens, ServedModel: spec.Model, CachePrompt: spec.CachePrompt, StartedAt: started, ElapsedSeconds: elapsed, DispatchSeconds: dispatch, Offered: len(records), Warnings: []string{}}
+func summarizeServingCase(spec servingCase, plan servingPlan, records []servingRequest, started time.Time, elapsed, dispatch float64) servingCaseResult {
+	r := servingCaseResult{ID: spec.ID, Scenario: spec.Scenario, Concurrency: spec.Concurrency, TargetPromptTokens: spec.PromptTokens, MaxOutputTokens: spec.OutputTokens, ServedModel: spec.Model, CachePrompt: spec.CachePrompt, StartedAt: started, ElapsedSeconds: elapsed, DispatchSeconds: dispatch, Offered: len(records), Warnings: []string{}}
 	if r.ServedModel == "" {
 		r.ServedModel = plan.ServedModel
 	}
@@ -588,7 +636,7 @@ func summarizeServingCase(spec ServingCase, plan ServingPlan, records []servingR
 		if len(list) == 0 {
 			continue
 		}
-		w := ServingWindow{StartSeconds: float64(bucket) * windowSeconds, EndSeconds: min(elapsed, float64(bucket+1)*windowSeconds), Successful: len(list)}
+		w := servingWindow{StartSeconds: float64(bucket) * windowSeconds, EndSeconds: min(elapsed, float64(bucket+1)*windowSeconds), Successful: len(list)}
 		var ttfts []float64
 		count, known := 0, true
 		for _, v := range list {

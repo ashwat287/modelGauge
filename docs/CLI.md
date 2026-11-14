@@ -8,7 +8,7 @@
 `modelgauge help benchmark` prints a group overview. Commands use Go-style flags:
 put a positional model ID **before** its flags, as in `model install MODEL_ID
 --node NODE_ID`. Node IDs, job IDs, file names and URLs in uppercase are placeholders.
-Choose a fresh campaign output directory rather than overwriting evidence.
+Use a new experiment name for each new measurement.
 
 Human help and success messages use emojis. JSON commands have no decorative
 prefixes. `version` alone remains a plain version string. Failures go to stderr.
@@ -53,6 +53,7 @@ matching digest-pinned controller. Resource flags do not resize existing VMs.
 modelgauge node bootstrap --provider lima --name benchmark-node --source /absolute/checkout
 modelgauge node list
 modelgauge node status benchmark-node
+modelgauge node reconnect --name benchmark-node
 # Run inside a Linux node, not on macOS:
 modelgauge node inspect
 ```
@@ -87,89 +88,55 @@ modelgauge model install --id custom-model --url HTTPS_GGUF_URL \
 `--controller` and `--admin-token` are available for remote install/list/status/cancel.
 A completed install may need one more agent poll before inventory is updated.
 
-## 🧪 Benchmark campaigns
+## 🧪 Declarative experiments
 
-For current-source endpoint benchmarks, use `benchmark serving plan|run|report`.
-The endpoint must already exist; no provisioning or server lifecycle changes occur.
-
-```sh
-modelgauge benchmark serving plan --endpoint http://127.0.0.1:8080 \
-  --model my-model --concurrency 1,2 --requests 20 --output serving.json
-modelgauge benchmark serving run --plan serving.json --output results/serving
-modelgauge benchmark serving report --file results/serving/result.json --format csv
-# Alternatively submit the plan to an updated agent/controller:
-modelgauge benchmark submit --plan serving.json
-```
-
-Set `--node` and `--execution-mode` when planning for an agent. Important planning
-flags: `--api openai|llama.cpp`, `--served-model`, `--suite basic|deployment`,
-`--contexts`, `--concurrency`, `--requests`, `--duration`, `--request-rate`,
-`--warmups`, `--output-tokens`, `--request-timeout`, `--readiness-timeout`,
-`--readiness-path`, `--sustain-duration`, `--idle-before`, `--switch-models`,
-`--dataset`, `--ttft-ms`, `--tpot-ms`, `--latency-ms`, `--metrics-url`,
-`--local-server-pid`, `--sample-interval`, `--seed`, `--temperature` and
-`--record-outputs`. Authentication uses `MODELGAUGE_INFERENCE_TOKEN` and the
-separate optional `MODELGAUGE_INFERENCE_METRICS_TOKEN`, not command-line secrets.
-See [serving methodology and limitations](BENCHMARKING.md#-benchmarks-against-an-existing-inference-endpoint).
-
-The following campaign commands remain the CPU engine benchmark workflow.
+All workload settings belong in a versioned YAML file; connection credentials
+remain in the saved control configuration, environment, or connection flags.
+Start with [examples/benchmark.yaml](../examples/benchmark.yaml).
 
 ```sh
 modelgauge benchmark profiles list
-modelgauge benchmark campaign create \
-  --node benchmark-node --execution-mode lima-linux \
-  --models qwen2.5-1.5b-instruct:q4_k_m,qwen2.5-1.5b-instruct:q5_k_m \
-  --contexts 512,4096 --threads 1,2 --output campaigns/comparison --submit
-modelgauge benchmark campaign status --file campaigns/comparison/campaign.json
+modelgauge validate -f benchmark.yaml
+modelgauge apply -f benchmark.yaml --dry-run
+modelgauge apply -f benchmark.yaml
+modelgauge status -f benchmark.yaml
+modelgauge cancel -f benchmark.yaml
 ```
 
-`create` resolves **installed model IDs**, not paths or arbitrary search terms.
-It requires controller access even without `--submit`. Defaults are contexts
-`512,4096,8192`, threads `1,2`, execution mode `native-isolated`, and an automatically
-named local output directory. Set `--execution-mode lima-linux` for Lima targets.
-Optional `--binary` selects a llama-bench path on the target. `--submit` queues
-one plan per model; without it, plans are written only. Repeated `--submit`
-creates new jobs. A campaign is not an atomic database batch: a later failure
-can leave earlier plans queued. Use `--resume` with the same output and flags
-to reconcile saved request IDs without duplicating accepted plans.
+| Command | Behavior |
+|---|---|
+| `validate -f FILE` | Strict YAML/module validation and installed node/model resolution; no jobs |
+| `apply -f FILE --dry-run` | Same preflight; prints fully resolved plans and defaults as JSON |
+| `apply -f FILE` | Atomically save the named experiment and queue every node/model pair |
+| `status -f FILE` | Read saved plans and their current statuses |
+| `cancel -f FILE` | Cancel every queued/active plan; completed plans and evidence remain |
 
-`status --file FILE` reads its local campaign manifest and queries submitted plan
-states. It returns JSON; it does not block until completion or cancel the campaign.
-Cancel individual plan IDs with `benchmark cancel PLAN_ID`.
+All five return JSON. `--file` is an alias for `-f`. All accept `--controller` and
+`--admin-token`; only apply accepts `--dry-run`. There are no workload override
+flags such as `--threads`: edit the file instead. The commands are one-shot.
 
-## 📋 Single plans and direct runs
+Names are controller-wide immutable run identities. Reapply the same declaration
+from any CLI to get the original job IDs and frozen plans. An edited declaration
+under the same name fails; create a new name for another run. Comments and key
+order do not affect identity. Status/cancel also reject a file whose specification
+has changed. Cancellation uses the existing lease mechanism; a running worker
+stops after receiving cancellation, so it is not instantaneous. Closing the CLI
+after apply does not cancel accepted work.
 
-```sh
-modelgauge plan example > plan.json
-modelgauge plan validate plan.json
+The controller resolves execution mode, model paths and checksums from inventory.
+Every requested model must already be installed on every requested node. There
+are no implicit downloads, VM changes, or inference endpoints in the declaration.
+See [schema, defaults and examples](BENCHMARKING.md).
 
-# Run creation where this GGUF file is readable.
-modelgauge benchmark plan create \
-  --node linux-node --model /absolute/path/model.gguf --model-id custom-model \
-  --profile standard-cpu --execution-mode native-isolated \
-  --contexts 512,4096 --threads 1,2 --warmups 3 --repetitions 5 \
-  --output custom-plan.json
-modelgauge benchmark submit --plan custom-plan.json
+## 📋 Low-level JSON tools and historical compatibility
 
-# Or run locally on Linux, bypassing the controller:
-modelgauge benchmark run --plan custom-plan.json --output results/local-example
-modelgauge benchmark cancel PLAN_ID
-```
-
-`plan example` is an editable JSON template; its placeholder paths are not executable.
-`plan validate` checks structure, not model existence or thermal state.
-`benchmark plan create` hashes a file visible to the CLI, so a remote node-only
-path cannot be used from the host. Use campaigns for managed remote models.
-Available flags also include `--binary` and `--overwrite` (explicit replacement
-of an existing generated plan); `--profile` currently accepts only
-`standard-cpu`. Generated zero `--warmups` / `--repetitions` values fall back to
-profile defaults; use a custom validated plan for other supported case shapes.
-
-`benchmark submit` returns JSON with `plan_id` and queue status. `benchmark run`
-prints a human completion/artifact path and writes evidence locally; it does not
-upload results to PostgreSQL. Local execution requires Linux, GNU `/usr/bin/time`,
-a readable GGUF and a working llama-bench. Direct execution uses the explicit `runtime.binary` or `llama-bench` on PATH.
-The polling agent additionally discovers the managed runtime before execution.
+Flag-based `benchmark campaign create` and `benchmark plan create` are retired;
+use YAML. Existing JSON plan APIs, stored results, exports, and historical
+`benchmark campaign status --file campaign/campaign.json` remain supported.
+Advanced diagnostics can still use `plan example`, `plan validate FILE`,
+`benchmark submit --plan FILE`, `benchmark cancel PLAN_ID`, and Linux-only
+`benchmark run --plan FILE --output DIR`. These tools do not create named
+experiments; prefer the YAML flow for normal benchmarking.
 
 ## 📈 Results
 
@@ -244,3 +211,29 @@ a tracked running Lima node, or `--raw-from DIRECTORY` for copied local run
 folders. History is optional and uses explicit RFC3339 times; repeat `--query`
 to replace default PromQL selectors. Normal controller/admin overrides apply.
 See [export contents, limits and verification](operations/EXPORT.md) before cleanup.
+
+## 🔌 Controller execution module
+
+Execution starts automatically with the bundled controller deployment. After
+`node bootstrap`, submit model installs or YAML experiments and query their status.
+The host CLI can exit while work continues. `executor run` has been removed.
+
+For a manually deployed controller:
+
+```sh
+modelgauge server --listen :8080 --executor-state-dir /persistent/modelgauge
+```
+
+The directory stores private SSH connections and durable upload journals and must
+survive process/container replacement. Node connections use authenticated admin
+API routes documented in [API.md](API.md). The bundled deployment mounts its PVC
+at `/var/lib/modelgauge` and supplies this setting automatically.
+
+`deployment` remains the default profile: one direct stage, then serving stages.
+Choose `standard-cpu` or `node-serving` for independent measurements.
+
+`node reconnect --name NODE` refreshes a prepared managed Lima node’s current SSH
+address and credentials without rebuilding llama.cpp or reinstalling models. The
+node must be running and its executor must have no active or pending work. Queued
+jobs remain queued until the refreshed connection succeeds. Node status includes
+`executor.address`, `last_error`, `last_attempt_at` and `last_success_at` when available.

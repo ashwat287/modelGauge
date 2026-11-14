@@ -24,7 +24,6 @@ type CatalogEntry struct {
 	URL          string `json:"url"`
 }
 
-func Search(query string) ([]CatalogEntry, error) { return SearchContext(context.Background(), query) }
 func SearchContext(ctx context.Context, query string) ([]CatalogEntry, error) {
 	client := &http.Client{Timeout: 30 * time.Second}
 	request, err := http.NewRequestWithContext(ctx, "GET", "https://huggingface.co/api/models/"+catalogRepository+"?blobs=true", nil)
@@ -68,7 +67,6 @@ func SearchContext(ctx context.Context, query string) ([]CatalogEntry, error) {
 	return entries, nil
 }
 
-func Resolve(id string) (CatalogEntry, error) { return ResolveContext(context.Background(), id) }
 func ResolveContext(ctx context.Context, id string) (CatalogEntry, error) {
 	entries, err := SearchContext(ctx, id)
 	if err != nil {

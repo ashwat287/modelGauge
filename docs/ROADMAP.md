@@ -8,7 +8,7 @@ not a promise of dates or support for unimplemented commands.
 ## ✅ Implemented foundation
 
 - Go CLI/controller/Linux agent with versioned benchmark plan/result messages.
-- CPU GGUF model catalog/download/inventory and multi-model campaign generation.
+- CPU GGUF model catalog/download/inventory and declarative multi-model/multi-node experiments.
 - Fixed warm-ups, repetition samples, prompt/generation throughput and GNU-time RSS.
 - PostgreSQL-backed queues, leases, renewal, cancellation and recovery journals.
 - Results queries and deterministic stable-case/thread/memory recommendations.

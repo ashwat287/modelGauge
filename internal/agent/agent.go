@@ -1,11 +1,14 @@
-// Package agent runs on the measured node and executes controller-issued plans.
+// Package agent bridges controller-issued plans to a benchmark worker.
 package agent
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"regexp"
 	"strings"
 	"sync/atomic"
 	"time"
@@ -13,12 +16,13 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/client"
 	"github.com/nerdylucifer/modelgauge/internal/controller"
-	"github.com/nerdylucifer/modelgauge/internal/modelcache"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 type Config struct {
+	SSH           *SSHConnection
+	TargetVM      string // Used only for bootstrap inspection through Lima; ongoing execution uses SSH.
 	ControllerURL string
 	Token         string
 	NodeID        string
@@ -26,6 +30,7 @@ type Config struct {
 	NodeKind      string
 	ExecutionMode protocol.ExecutionMode
 	ResultsDir    string
+	report        func(error)
 }
 
 type lease struct {
@@ -97,46 +102,37 @@ func ConfigFromEnv(getenv func(string) string) (Config, error) {
 
 // RunOnce registers the node, leases at most one plan, and uploads the result.
 // It returns true when a plan was executed.
-func RunOnce(ctx context.Context, config Config) (bool, error) {
+func RunOnce(ctx context.Context, config Config) (worked bool, resultErr error) {
 	api := &client.Client{BaseURL: config.ControllerURL, AgentToken: config.Token}
-	host, err := platform.Inspect()
-	if err != nil {
-		return false, err
-	}
-	_, err = api.DoJSON(ctx, "POST", "/v1/nodes/register", "agent", registerRequest{
-		NodeID: config.NodeID, DisplayName: config.DisplayName, NodeKind: config.NodeKind,
-		ExecutionMode: config.ExecutionMode, AgentVersion: buildinfo.Version,
-		Hardware: map[string]any{"hostname": host.Hostname, "os": host.OS, "architecture": host.Architecture, "cpus": host.CPUs, "memory_bytes": host.MemoryBytes},
-	}, nil)
-	if err != nil {
-		return false, fmt.Errorf("register node: %w", err)
-	}
-	var busy atomic.Bool
-	stopHeartbeat := keepHeartbeat(ctx, api, config.NodeID, &busy, 30*time.Second)
+	var stopHeartbeat func()
 	defer func() {
-		stopHeartbeat()
-		finalCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
-		defer cancel()
-		_, _ = api.DoJSON(finalCtx, "POST", "/v1/nodes/"+config.NodeID+"/heartbeat", "agent", heartbeatRequest{Status: "online"}, nil)
+		if stopHeartbeat != nil {
+			stopHeartbeat()
+		}
+		status := "online"
+		if errors.Is(resultErr, errWorkerTransport) {
+			status = "offline"
+		}
+		if stopHeartbeat != nil || status == "offline" {
+			finalCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			defer cancel()
+			_, _ = api.DoJSON(finalCtx, "POST", "/v1/nodes/"+config.NodeID+"/heartbeat", "agent", heartbeatRequest{Status: status}, nil)
+		}
 	}()
 	pending, err := loadPending(config)
 	if err != nil {
 		return false, err
 	}
+	if pending == nil {
+		if err := SyncNode(ctx, config); err != nil {
+			return false, err
+		}
+	}
+	var busy atomic.Bool
+	stopHeartbeat = keepHeartbeat(ctx, api, config.NodeID, &busy, 30*time.Second)
 	if pending != nil {
 		busy.Store(true)
 		return true, processPending(ctx, api, config, pending)
-	}
-	models, err := modelcache.DiscoverContext(ctx)
-	if err != nil {
-		return false, fmt.Errorf("discover models: %w", err)
-	}
-	catalog := make([]controller.NodeModel, 0, len(models))
-	for _, model := range models {
-		catalog = append(catalog, controller.NodeModel{ID: model.ID, SHA256: model.SHA256, SizeBytes: model.SizeBytes, Path: model.Path})
-	}
-	if _, err := api.DoJSON(ctx, "POST", "/v1/nodes/"+config.NodeID+"/models", "agent", catalog, nil); err != nil {
-		return false, fmt.Errorf("sync models: %w", err)
 	}
 	var install controller.InstallJob
 	status, err := api.DoJSON(ctx, "POST", "/v1/nodes/"+config.NodeID+"/model-installs/lease", "agent", nil, &install)
@@ -165,7 +161,20 @@ func RunOnce(ctx context.Context, config Config) (bool, error) {
 }
 
 func Run(ctx context.Context, config Config, once bool, interval time.Duration) error {
-	unlock, err := platform.Lock("agent")
+	if config.TargetVM != "" && !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`).MatchString(config.TargetVM) {
+		return fmt.Errorf("invalid target VM")
+	}
+	name := "agent"
+	if config.TargetVM != "" {
+		name += "-" + config.TargetVM
+	}
+	var unlock func()
+	var err error
+	if config.SSH != nil {
+		unlock, err = platform.LockFile(filepath.Join(config.ResultsDir, ".executor.lock"))
+	} else {
+		unlock, err = platform.Lock(name)
+	}
 	if err != nil {
 		return err
 	}
@@ -173,13 +182,24 @@ func Run(ctx context.Context, config Config, once bool, interval time.Duration) 
 	if interval <= 0 {
 		return fmt.Errorf("poll interval must be positive")
 	}
+	var lastError string
+	var lastLogged time.Time
 	for {
 		_, err := RunOnce(ctx, config)
+		if config.report != nil {
+			config.report(err)
+		}
 		if once {
 			return err
 		}
 		if err != nil && ctx.Err() == nil {
-			slog.Error("agent iteration failed; durable work will retry", "error", err)
+			if err.Error() != lastError || time.Since(lastLogged) >= time.Minute {
+				slog.Error("agent iteration failed; durable work will retry", "node", config.NodeID, "error", err)
+				lastLogged = time.Now()
+			}
+			lastError = err.Error()
+		} else {
+			lastError = ""
 		}
 		select {
 		case <-ctx.Done():
@@ -220,4 +240,26 @@ func keepHeartbeat(ctx context.Context, api *client.Client, nodeID string, busy 
 		}
 	}()
 	return func() { cancel(); <-done }
+}
+
+// SyncNode registers remote hardware and inventory without leasing work.
+func SyncNode(ctx context.Context, config Config) error {
+	api := &client.Client{BaseURL: config.ControllerURL, AgentToken: config.Token}
+	host, catalog, err := inspectTarget(ctx, config)
+	if err != nil {
+		return err
+	}
+	_, err = api.DoJSON(ctx, "POST", "/v1/nodes/register", "agent", registerRequest{
+		NodeID: config.NodeID, DisplayName: config.DisplayName, NodeKind: config.NodeKind,
+		ExecutionMode: config.ExecutionMode, AgentVersion: buildinfo.Version,
+		Hardware: map[string]any{"hostname": host.Hostname, "os": host.OS, "architecture": host.Architecture, "cpus": host.CPUs, "memory_bytes": host.MemoryBytes},
+	}, nil)
+	if err != nil {
+		return fmt.Errorf("register node: %w", err)
+	}
+
+	if _, err := api.DoJSON(ctx, "POST", "/v1/nodes/"+config.NodeID+"/models", "agent", catalog, nil); err != nil {
+		return fmt.Errorf("sync models: %w", err)
+	}
+	return nil
 }

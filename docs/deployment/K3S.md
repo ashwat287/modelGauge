@@ -53,8 +53,8 @@ curl -fsS http://CONTROL_VM_IP:31080/healthz
 curl -fsS http://CONTROL_VM_IP:31080/metrics
 ```
 
-The controller runs database migrations at startup. Do not manually apply
-`001-init-schema.sql` unless you are recovering a database outside ModelGauge.
+The controller runs database migrations at startup. The canonical SQL lives in
+`internal/controller/migrations/`; deploy scripts do not need a separate schema copy.
 
 ## 📋 Agent connection
 

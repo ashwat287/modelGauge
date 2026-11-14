@@ -14,7 +14,6 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/client"
 	"github.com/nerdylucifer/modelgauge/internal/controller"
-	"github.com/nerdylucifer/modelgauge/internal/modelcache"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
@@ -115,7 +114,10 @@ func processPending(ctx context.Context, api *client.Client, c Config, p *pendin
 			stop, reason := watchLease(workCtx, api, renewPath, token, expires, cancel)
 			defer stop()
 			if install {
-				_, err = modelcache.InstallContext(workCtx, p.Install.ModelID, p.Install.SourceURL, p.Install.SHA256)
+				err = installTarget(workCtx, c, p.Install)
+				if errors.Is(err, errWorkerTransport) {
+					return err
+				}
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}
@@ -143,7 +145,10 @@ func processPending(ctx context.Context, api *client.Client, c Config, p *pendin
 					return err
 				}
 				_, _ = api.DoJSON(workCtx, "POST", root+"/heartbeat", "agent", heartbeatRequest{Status: "busy"}, nil)
-				result, _, err := benchmark.RunWithOptions(workCtx, plan, benchmark.Options{RunID: "run-" + id, OutputDir: output, Resume: true})
+				result, _, err := benchmarkTarget(workCtx, c, plan, benchmark.Options{RunID: "run-" + id, OutputDir: output, Resume: true})
+				if errors.Is(err, errWorkerTransport) {
+					return err
+				}
 				if ctx.Err() != nil {
 					return ctx.Err()
 				}

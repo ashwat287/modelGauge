@@ -58,7 +58,7 @@ modelgauge node status benchmark-node
 ```
 
 The guest installs Linux tools and compiles the pinned CPU-only llama.cpp
-revision. An agent is installed as a systemd user service with lingering enabled.
+revision. It installs a worker binary and enables systemd lingering, without a persistent agent.
 The default target gets 2 vCPUs, 3 GiB memory and a 30 GiB disk. The node should
 register as `online` with `execution_mode: lima-linux`. No node directories,
 runtime paths, addresses or enrollment tokens need to be supplied in this flow.
@@ -68,6 +68,11 @@ outcome. A VM newly created by that invocation is rolled back; an existing VM is
 retained with verified checkpoints. Fix the reported error before retrying.
 A VM containing k3s is refused as a benchmark node. Bootstrap also refuses an
 active llama-bench process rather than upgrading during measurement.
+
+Node bootstrap also configures the controller's embedded executor with a dedicated,
+host-key-pinned SSH connection. No extra host terminal is required. Model installs,
+benchmark dispatch and result uploads continue inside the controller after the CLI
+exits. An unreachable node retains pending work until recovery or lease expiry.
 
 ## 4. 📦 Install one model
 
@@ -88,7 +93,7 @@ modelgauge model list --node benchmark-node
 ```
 
 Proceed when the job is `completed` and the ID appears in inventory. Inventory
-may lag until the next agent poll. With `jq`, capture a real job ID directly:
+may lag until the next executor poll. With `jq`, capture a real job ID directly:
 
 ```sh
 JOB_ID="$(modelgauge model install qwen2.5-1.5b-instruct:q5_k_m \
@@ -100,31 +105,38 @@ Omitting `--node` installs on the CLI machine instead. For an arbitrary public
 GGUF URL, use `model install --id NAME --url HTTPS_URL --sha256 HASH --node NODE_ID`.
 Replace URL/checksum placeholders with actual trusted model metadata.
 
-## 5. 🧪 Create and submit a small campaign
+## 5. 🧪 Declare and apply a small experiment
+
+Copy [the example](../examples/benchmark.yaml) into `benchmark.yaml`, and edit its
+node and installed model IDs. Release binary users can create that file using the
+YAML shown in the [benchmarking guide](BENCHMARKING.md). No node paths are needed.
 
 ```sh
-modelgauge benchmark campaign create \
-  --node benchmark-node --execution-mode lima-linux \
-  --models qwen2.5-1.5b-instruct:q4_k_m \
-  --contexts 512 --threads 1,2 \
-  --output campaigns/first --submit
-```
-
-This resolves the node's model paths, writes a per-model plan and a local
-`campaign.json`, and submits the plan. Use a new output directory for each
-experiment. Without `--submit`, files are created but no workload is queued.
-The agent leases the plan and runs cases sequentially.
-
-```sh
-modelgauge benchmark campaign status --file campaigns/first/campaign.json
+modelgauge validate -f benchmark.yaml
+modelgauge apply -f benchmark.yaml --dry-run
+modelgauge apply -f benchmark.yaml
+modelgauge status -f benchmark.yaml
 modelgauge results show --node benchmark-node
 ```
+
+Validation and dry-run resolve installed inventory and preview the ordered plans;
+they queue no work. Apply stores an immutable experiment and queues all node/model
+pairs atomically. Retrying the same file returns the same jobs, even after the CLI
+exits or loses its response. Use a new `metadata.name` for another measurement.
+The controller continues execution after the CLI exits. To stop the experiment,
+use `modelgauge cancel -f benchmark.yaml`.
 
 Poll status manually until the plan reaches a terminal state. These are
 one-shot queries, not watch commands. Standard CPU uses three warm-up repetitions
 and five measured repetitions per throughput case, then one memory workload.
-A short-context campaign can still take several minutes on a small CPU.
+A short-context experiment can still take several minutes on a small CPU.
 Do not start another workload to "help" warm the node during an experiment.
+
+The example’s ordered stages run direct throughput/RSS first, then temporary
+model-serving request tests. It never overlaps llama-bench with llama-server.
+Keep just the `standard-cpu` stage for direct measurements only. The example uses
+the short serving `basic` suite. Choose `config.suite: deployment` to add sustained
+load, cache checks and cancellation; allow several minutes.
 
 ## 6. 📈 Read the evidence and recommendation
 
@@ -161,16 +173,17 @@ benchmark result metrics come from the controller independently.
 
 After one successful run, install the other quantizations and compare:
 
+Edit a new declaration with a new `metadata.name`, add the three installed model
+IDs under `spec.models`, and set `spec.matrix.contexts: [512, 4096, 8192]`.
+
 ```sh
-modelgauge benchmark campaign create \
-  --node benchmark-node --execution-mode lima-linux \
-  --models qwen2.5-1.5b-instruct:q4_k_m,qwen2.5-1.5b-instruct:q5_k_m,qwen2.5-1.5b-instruct:q8_0 \
-  --contexts 512,4096,8192 --threads 1,2 \
-  --output campaigns/quantization-comparison --submit
+modelgauge apply -f comparison.yaml --dry-run
+modelgauge apply -f comparison.yaml
+modelgauge status -f comparison.yaml
 ```
 
 Run this only after **all three models are installed**. Larger contexts can be
-slow and need more RAM. The campaign measures one memory workload per model at
+slow and need more RAM. The experiment measures one memory workload per model at
 its largest requested prompt and highest requested thread count. It does not
 create a memory curve automatically. See [methodology](BENCHMARKING.md) for
 separate per-context memory experiments and thermal controls.
@@ -178,15 +191,16 @@ separate per-context memory experiments and thermal controls.
 ## ⏹️ Stop work or pause the lab
 
 ```sh
-modelgauge benchmark cancel PLAN_ID
+modelgauge cancel -f benchmark.yaml
 modelgauge model install cancel JOB_ID
 ```
 
-Use the plan IDs from campaign JSON and the real install job ID. Active work
+Use `modelgauge cancel -f benchmark.yaml` for the experiment, and the real install job ID for downloads. Active work
 stops cooperatively when its lease renewal observes cancellation. Wait until
 work is terminal before stopping VMs with `limactl stop VM_NAME`. Stopping keeps
 VM disks; deleting a VM or PVC can destroy data. The updated source build provides [owned-resource cleanup](operations/CLEANUP.md)
-with `modelgauge cleanup --dry-run --delete-vms`, followed by
+with `# Wait for all jobs and uploads to finish; cleanup pauses controller execution.
+modelgauge cleanup --dry-run --delete-vms`, followed by
 `modelgauge cleanup --delete-vms` when the report matches your intent. This only
 covers installations bootstrapped with ownership tracking; v0.1.0 has no cleanup
 command. There is no automatic backup command. See [operations](OPERATIONS.md).

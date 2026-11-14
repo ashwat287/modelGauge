@@ -79,22 +79,67 @@ that recovery guarantee. See [recovery](operations/JOB-RECOVERY.md).
 - `benchmark-plan/v1`: node, execution mode, runtime, model identity, defaults, throughput cases and memory case.
 - `benchmark-result/v1`: run/plan/node identity, terminal state, cases, memory, runtime metadata and artifact hashes.
 
-Current-source plans may instead supply `benchmark: {"kind":"serving","config":{...}}`
-and `runtime.kind: "http"`; model paths and engine cases are then unnecessary.
-The benchmark module validates `config`. These plans still use the existing
-submission/lease/completion routes. Results carry
-`benchmark: {"kind":"serving","data":{...}}`, whose data has schema
-`modelgauge-serving/v1`; result queries and exports return it. Older top-level
-`serving` JSON is accepted on input. The report is persisted through existing JSON metadata, so
-there is no database schema/deployment migration. Update controller and agent
-application binaries together; v0.2.2 does not understand these optional fields.
-Inference endpoint credentials are environment-only on the executing client or
-agent and are not controller admission credentials. See the
-[serving benchmark methodology](BENCHMARKING.md#-benchmarks-against-an-existing-inference-endpoint).
-- `benchmark-campaign/v1`: local CLI manifest grouping generated plan files and submitted plan IDs.
+Managed serving plans supply `benchmark: {"kind":"serving","config":{...}}`,
+`runtime.kind: "llama-server"`, an installed model path/SHA-256 and a `server`
+configuration inside the module config. Engine cases are not used. The module
+validates its configuration and owns the model process on the measured node.
+These plans use the same submission/lease/completion routes. Results carry
+`benchmark: {"kind":"serving","data":{...}}` with schema `modelgauge-serving/v1`.
+Historical top-level `serving` reports remain readable; regenerate old endpoint
+plans using the node-serving profile. Generic reports persist in the existing
+JSON metadata without a database migration. Update CLI, controller and agent
+binaries together. No external inference endpoint or inference credentials are
+needed. See [serving methodology](BENCHMARKING.md#-serving-benchmarks-on-the-measured-node).
+
+- `benchmark-campaign/v1`: historical local CLI manifests; new experiments use controller-owned Benchmark declarations.
 - `modelgauge-release/v1`: version/repository/commit, image digest and executable size/checksums.
 
 The generic benchmark plan/result schema names are not product branding and stay
 versioned independently of the binary. Raw evidence files are not exposed through
 an artifact-download endpoint. PostgreSQL keeps normalized results and metadata;
 full raw JSON remains on the measured node.
+
+## 🔌 Controller-owned node connections
+
+Admin authentication is required for every connection operation:
+
+| Method and path | Behavior |
+|---|---|
+| `GET /v1/nodes/{nodeID}/connection` | Configured/pending status; never returns credentials |
+| `PUT /v1/nodes/{nodeID}/connection` | Enroll an SSH target and start controller execution |
+| `DELETE /v1/nodes/{nodeID}/connection` | Stop an idle executor and remove its connection |
+| `POST /v1/nodes/{nodeID}/connection/pause` | Persistently pause an idle target for upgrade/cleanup |
+| `POST /v1/nodes/{nodeID}/connection/resume` | Resume its saved connection |
+
+PUT accepts `address` (`host:port`), `user`, `private_key` (unencrypted PEM) and
+`host_key` (OpenSSH public host key). Node bootstrap handles this automatically.
+Private credentials are stored as mode-0600 files on the controller PVC; GET
+returns `node_id`, `configured`, `pending`, `paused`, `location: controller` and,
+for a running executor, `address`, `last_error`, `last_attempt_at` and
+`last_success_at`. Timestamps are omitted until an iteration completes.
+`GET /v1/nodes/{nodeID}` includes these diagnostics under `executor`, alongside
+the existing node fields. Credentials are never returned. Node status becomes
+`offline` after 90 seconds without a heartbeat.
+Invalid credentials return 400; pending-work conflicts return 409. Servers without
+executor storage configured return 503. Connection changes never discard journals.
+
+## 📋 Named declarative experiments
+
+Admin authentication is required for these endpoints:
+
+| Method and path | Behavior |
+|---|---|
+| `POST /v1/experiments` | Body: JSON representation of the YAML Benchmark declaration; atomically resolve, freeze, queue all plans |
+| `POST /v1/experiments?dry_run=true` | Resolve/validate only; no experiment/jobs created |
+| `GET /v1/experiments/{name}` | Read frozen declaration, resolved plans, current job statuses |
+| `POST /v1/experiments/{name}/cancel` | Cancel queued/active plans; retain completed jobs/evidence |
+
+Responses contain `name`, `spec_sha256`, `specification`, `created_at` (accepted
+experiments), and `plans` with `plan_id`, current `status`, and resolved
+`specification`. GET/cancel accept optional `spec_sha256` to reject a stale/edited
+file with HTTP 409. Changed content under an existing name also returns 409;
+unknown names return 404; invalid declarations or missing installed targets return
+400. Credentials are supplied through the existing admin header, never YAML.
+An accepted reapply returns the original snapshot even if node inventory has changed.
+Migration `004-experiments` adds the controller-owned record; infrastructure
+manifests and the worker execution protocol are unchanged by YAML support.

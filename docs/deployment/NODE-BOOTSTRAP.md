@@ -14,18 +14,18 @@ bin/modelgauge model install qwen2.5-1.5b-instruct:q4_k_m --node benchmark-node
 ```
 
 No guest directories, controller addresses, tokens or runtime paths need to be supplied.
-The saved active control connection supplies enrollment details. The guest
-contacts the controller through `host.lima.internal` and the existing API tunnel.
-The host and control VM must remain running for that connection.
+The saved active control connection supplies enrollment details. The controller starts and owns the executor. It reaches the guest over a pinned
+SSH connection through Lima's existing loopback forward. The guest runs temporary
+workers without controller credentials. Keep Lima and both VMs running.
 
 Bootstrap defaults to two vCPUs, 3 GiB RAM and a 30 GiB disk. `--cpus`,
 `--memory`, and `--disk` change new VM resources. Existing named VMs are reused;
 VM resource settings are not resized. A VM containing k3s is refused to avoid
-benchmark/control-plane interference. An active llama-bench process also blocks
+benchmark/control-plane interference. An active llama-bench or llama-server process also blocks
 an upgrade.
 
 The command installs Git, CMake, the GNU build tools and GNU time in the Linux
-VM, then builds CPU-only llama-bench at upstream commit
+VM, then builds CPU-only llama-bench and llama-server at upstream commit
 `eb4e244be77a906a183cd4a00fd51d9ad3200955`. Native CPU tuning, OpenMP, BLAS, CUDA
 and Vulkan are disabled for a reproducible initial CPU profile. Select another
 full commit with `--llama-revision`. This pin matches the revision used in the
@@ -33,15 +33,15 @@ full commit with `--llama-revision`. This pin matches the revision used in the
 with different build flags must still be compared separately.
 
 The runtime is cached by revision under ModelGauge's managed runtime directory.
-An already built revision is reused after its executable passes `--help`.
-The polling agent discovers the current managed runtime before PATH/legacy locations.
+An already built revision is reused when both executables are present and pass `--help`.
+Rerunning bootstrap upgrades older cached revisions that contain only llama-bench.
+The worker discovers the current managed runtime before PATH/legacy locations.
 Direct local execution requires an explicit runtime binary or llama-bench on PATH.
-With a versioned CLI, the matching Linux agent is downloaded for the guest's
-architecture, checked against the release SHA-256 and size, validated as a Linux
-executable, transferred through Lima, and installed as a systemd user service.
-Development builds compile the agent on the host instead. The owner is configured
-for systemd lingering so polling survives the SSH session. Configuration is
-private; results and models use managed storage in the guest.
+A released CLI downloads its matching Linux worker for the guest architecture,
+checks its SHA-256 and size, validates it as Linux ELF, and transfers it through
+Lima. Source builds compile it on the host instead. Systemd lingering allows
+short-lived supervised workers; no permanent polling agent is installed.
+Models and raw evidence use managed storage inside the guest. Private SSH credentials and pending upload records stay on the controller PVC.
 
 For a host outside the checkout, supply `--source /path/to/repo`. This requires
 Go on the host. `--agent-binary /path/to/linux-modelgauge` accepts a compatible
@@ -49,17 +49,36 @@ prebuilt Linux executable instead. A Linux host matching the guest architecture
 can reuse its running binary. Release binaries need neither override nor host Go.
 The Linux VM still needs build tools to compile the pinned llama.cpp runtime.
 
-The initial enrollment protocol still uses the saved shared agent credential;
-per-node credential issuance remains separate security work. `node list/status`
-show controller-observed state, last contact, OS/architecture and VM resources,
-never the credential. If enrollment times out, inspect `systemctl --user status
-modelgauge-agent` inside the guest. A previous idle agent is restarted after a
-failed upgrade. Rerunning bootstrap reuses the VM/runtime and configuration.
+Bootstrap registers a dedicated SSH key with the controller, pins the node's
+existing SSH host key and records only a restricted public key on the node.
+The private key never enters the benchmark VM. After enrollment succeeds, old
+controller keys are retired; unrelated SSH keys remain unchanged. Cleanup removes
+only the public-key lines recorded by ModelGauge. The node's original SSH access
+is preserved.
 
-Benchmark execution is independent of k3s scheduling: the measured VM runs the
-agent/runtime while k3s owns the controller/database/monitoring. Host node-exporter
-registration for newly provisioned benchmark VMs is currently a separate
-monitoring setup step; benchmark result metrics appear through the controller.
+No host executor command is needed. Inspect controller logs if a model install
+stays queued. `node list/status` show controller-observed hardware and last contact.
+The existing shared agent credential remains an internal lease-API credential;
+per-node API credential issuance is separate work.
+
+Upgrades first pause controller execution and refuse pending work. On failure,
+the old connection is resumed where possible; successful enrollment replaces it.
+A managed older node's resident polling service/token is retired. Update the
+control deployment using this source version before upgrading benchmark nodes,
+because older controllers do not expose connection enrollment.
+
+The existing Lima host-loopback networking must be enabled. Bootstrap discovers
+the forwarded SSH port and host gateway rather than assuming a guest directory or
+IP. New benchmark VMs receive a fixed SSH forwarding port; existing VM configurations
+are preserved. Bootstrap probes that forward from the control VM before compiling
+the runtime. A changed SSH host key is rejected. After restarting an existing VM
+whose forwarded port changed, use `modelgauge node reconnect --name NODE` to refresh
+the idle executor without rebuilding or reinstalling models. SSH transport is implemented in Go;
+controller images require neither an SSH executable nor limactl.
+
+K3s continues to own the controller, database and monitoring. The controller adds
+one 1 GiB PVC for connections and recovery journals. Node exporter registration
+remains separate; result metrics are still exposed through the controller.
 
 ## ✅ Historical deployment validation
 

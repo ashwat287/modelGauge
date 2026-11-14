@@ -10,7 +10,6 @@ import (
 	"io"
 	"math"
 	"net/http"
-	"os"
 	"reflect"
 	"regexp"
 	"sort"
@@ -22,7 +21,7 @@ import (
 var errProbeCancelled = errors.New("benchmark cancellation probe")
 
 type servingClient struct {
-	plan ServingPlan
+	plan servingPlan
 	http *http.Client
 }
 
@@ -53,15 +52,15 @@ type servingRequest struct {
 	QualityPassed   *bool             `json:"quality_passed"`
 	CheckFailures   []string          `json:"check_failures,omitempty"`
 	Output          string            `json:"output,omitempty"`
-	ToolCalls       []ServingToolCall `json:"tool_calls,omitempty"`
+	ToolCalls       []servingToolCall `json:"tool_calls,omitempty"`
 	content         string
 }
 
-func newServingClient(plan ServingPlan) *servingClient {
+func newServingClient(plan servingPlan) *servingClient {
 	transport := http.DefaultTransport.(*http.Transport).Clone()
 	transport.MaxIdleConnsPerHost, transport.MaxIdleConns = 256, 256
 	return &servingClient{plan: plan, http: &http.Client{Transport: transport, CheckRedirect: func(*http.Request, []*http.Request) error {
-		return errors.New("inference redirects are refused to protect credentials")
+		return errors.New("model server redirects are refused; measurements must stay on the benchmark node")
 	}}}
 }
 
@@ -71,7 +70,7 @@ func (c *servingClient) address(path string) string {
 	return strings.TrimSuffix(strings.TrimRight(c.plan.Endpoint, "/"), "/v1") + path
 }
 
-func (c *servingClient) request(ctx context.Context, method, address, token string, body any) (*http.Response, error) {
+func (c *servingClient) request(ctx context.Context, method, address string, body any) (*http.Response, error) {
 	var input io.Reader
 	if body != nil {
 		data, err := json.Marshal(body)
@@ -85,16 +84,13 @@ func (c *servingClient) request(ctx context.Context, method, address, token stri
 		return nil, err
 	}
 	r.Header.Set("Content-Type", "application/json")
-	if token != "" {
-		r.Header.Set("Authorization", "Bearer "+token)
-	}
 	return c.http.Do(r)
 }
 
 func (c *servingClient) json(ctx context.Context, path string, body, result any) error {
 	ctx, stop := context.WithTimeout(ctx, seconds(c.plan.RequestTimeout))
 	defer stop()
-	r, err := c.request(ctx, "POST", c.address(path), os.Getenv("MODELGAUGE_INFERENCE_TOKEN"), body)
+	r, err := c.request(ctx, "POST", c.address(path), body)
 	if err != nil {
 		if ctx.Err() != nil {
 			return ctx.Err()
@@ -128,7 +124,7 @@ func (c *servingClient) ready(ctx context.Context) (float64, error) {
 	}
 	for {
 		probe, stop := context.WithTimeout(ctx, 2*time.Second)
-		r, err := c.request(probe, "GET", c.address(path), os.Getenv("MODELGAUGE_INFERENCE_TOKEN"), nil)
+		r, err := c.request(probe, "GET", c.address(path), nil)
 		ok := err == nil && r.StatusCode >= 200 && r.StatusCode < 300
 		if r != nil {
 			r.Body.Close()
@@ -144,7 +140,7 @@ func (c *servingClient) ready(ctx context.Context) (float64, error) {
 }
 
 // Exact synthetic content needs the endpoint's own tokenizer, never word counts.
-func (c *servingClient) synthetic(ctx context.Context, n int) (ServingPrompt, []int, error) {
+func (c *servingClient) synthetic(ctx context.Context, n int) (servingPrompt, []int, error) {
 	text := "Continue this document with a short summary. The sky is blue and the grass is green. "
 	var tokens []int
 	for attempt := 0; attempt < 16; attempt++ {
@@ -152,7 +148,7 @@ func (c *servingClient) synthetic(ctx context.Context, n int) (ServingPrompt, []
 			Tokens []int `json:"tokens"`
 		}
 		if err := c.json(ctx, "/tokenize", map[string]any{"content": text, "add_special": false}, &response); err != nil {
-			return ServingPrompt{}, nil, fmt.Errorf("token-length inputs require llama.cpp /tokenize and /detokenize; provide explicit prompt fixtures for other endpoints: %w", err)
+			return servingPrompt{}, nil, fmt.Errorf("token-length inputs require llama.cpp /tokenize and /detokenize; provide explicit prompt fixtures for other endpoints: %w", err)
 		}
 		tokens = response.Tokens
 		if len(tokens) >= n {
@@ -161,22 +157,22 @@ func (c *servingClient) synthetic(ctx context.Context, n int) (ServingPrompt, []
 		text += text
 	}
 	if len(tokens) < n {
-		return ServingPrompt{}, nil, errors.New("tokenizer did not produce enough input tokens")
+		return servingPrompt{}, nil, errors.New("tokenizer did not produce enough input tokens")
 	}
 	tokens = tokens[:n]
 	if c.plan.API == "llama.cpp" {
-		return ServingPrompt{ID: fmt.Sprintf("synthetic-%d", n)}, tokens, nil
+		return servingPrompt{ID: fmt.Sprintf("synthetic-%d", n)}, tokens, nil
 	}
 	var decoded struct {
 		Content string `json:"content"`
 	}
 	if err := c.json(ctx, "/detokenize", map[string]any{"tokens": tokens}, &decoded); err != nil {
-		return ServingPrompt{}, nil, err
+		return servingPrompt{}, nil, err
 	}
-	return ServingPrompt{ID: fmt.Sprintf("synthetic-%d", n), Text: decoded.Content}, nil, nil
+	return servingPrompt{ID: fmt.Sprintf("synthetic-%d", n), Text: decoded.Content}, nil, nil
 }
 
-func (c *servingClient) complete(ctx context.Context, spec ServingCase, prompt ServingPrompt, tokens []int, history []ServingMessage) servingRequest {
+func (c *servingClient) complete(ctx context.Context, spec servingCase, prompt servingPrompt, tokens []int, history []servingMessage) servingRequest {
 	result := servingRequest{StartedAt: time.Now().UTC(), PromptID: prompt.ID, Status: "error"}
 	started := time.Now()
 	requestCtx, cancel := context.WithTimeout(ctx, seconds(c.plan.RequestTimeout))
@@ -203,11 +199,11 @@ func (c *servingClient) complete(ctx context.Context, spec ServingCase, prompt S
 		}
 		body["cache_prompt"], body["ignore_eos"], body["return_tokens"] = spec.CachePrompt, spec.IgnoreEOS, true
 	} else {
-		messages := append([]ServingMessage(nil), history...)
+		messages := append([]servingMessage(nil), history...)
 		if len(prompt.Messages) > 0 {
 			messages = append(messages, prompt.Messages...)
 		} else {
-			messages = append(messages, ServingMessage{Role: "user", Content: prompt.Text})
+			messages = append(messages, servingMessage{Role: "user", Content: prompt.Text})
 		}
 		body["messages"], body["max_tokens"] = messages, spec.OutputTokens
 		body["stream_options"] = map[string]bool{"include_usage": true}
@@ -215,10 +211,10 @@ func (c *servingClient) complete(ctx context.Context, spec ServingCase, prompt S
 			body["tools"] = prompt.Tools
 		}
 	}
-	r, err := c.request(requestCtx, "POST", c.address(path), os.Getenv("MODELGAUGE_INFERENCE_TOKEN"), body)
+	r, err := c.request(requestCtx, "POST", c.address(path), body)
 	terminal := false
 	var content strings.Builder
-	toolParts := map[int]*ServingToolCall{}
+	toolParts := map[int]*servingToolCall{}
 	toolBytes := 0
 	tokenBoundaries := c.plan.API == "llama.cpp"
 	if err == nil {
@@ -298,7 +294,7 @@ func (c *servingClient) complete(ctx context.Context, spec ServingCase, prompt S
 						}
 						part := toolParts[call.Index]
 						if part == nil {
-							part = &ServingToolCall{}
+							part = &servingToolCall{}
 							toolParts[call.Index] = part
 						}
 						part.Name += call.Function.Name
@@ -484,7 +480,7 @@ func readServingEvents(input io.Reader, consume func([]byte) error) error {
 	return err
 }
 
-func checkServingOutput(text string, calls []ServingToolCall, check ServingChecks) []string {
+func checkServingOutput(text string, calls []servingToolCall, check servingChecks) []string {
 	var failures []string
 	if check.Exact != nil && text != *check.Exact {
 		failures = append(failures, "exact")

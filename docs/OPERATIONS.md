@@ -33,17 +33,25 @@ Inside the measured node:
 
 ```sh
 limactl shell --workdir / benchmark-node
-systemctl --user status modelgauge-agent --no-pager
-journalctl --user -u modelgauge-agent -n 100 --no-pager
-pgrep -af llama-bench
+systemctl --user list-units 'modelgauge-worker-*'
+journalctl --user -u 'modelgauge-worker-*' -n 100 --no-pager
+pgrep -af 'llama-bench|llama-server'
 free -h
 swapon --show
 ```
 
 `pgrep` shows whether the measured process is currently active; the absence of a
 process can also mean downloading, warming between commands, waiting, uploading,
-or failure. Check campaign/job state and agent logs as well. Avoid killing the
+or failure. Check experiment/job state and the controller logs as well. Avoid killing the
 wrapper or deleting a lock/journal to make a node appear idle.
+
+For managed Lima targets, polling and execution ownership run inside the controller.
+Check `kubectl -n benchmark-system logs deployment/modelgauge-controller`. No host
+executor command or permanent node agent service is expected. Connection status
+is available through the authenticated `GET /v1/nodes/NODE/connection` API. A
+controller restart restores its private connections and pending journals from the
+PVC. A lost SSH connection stops the temporary worker and retains recoverable work.
+Legacy manual Linux agents retain their systemd service.
 
 ## 🔎 Common failures
 
@@ -55,7 +63,7 @@ wrapper or deleting a lock/journal to make a node appear idle.
 | Node offline | Agent unit/logs, reachable API URL, token and guest network; local Lima uses `host.lima.internal`, not guest localhost. |
 | Model install queued | Agent needs to be online and free of another active lease. |
 | Install completed but model missing | Wait for the next inventory poll; check agent logs and node ID. |
-| Model unavailable for campaign | Use the exact installed ID from `model list --node ID`; wait for all models first. |
+| Model unavailable for experiment | Use the exact installed ID from `model list --node ID`; wait for all models first. |
 | `llama-bench` not found | Agent discovers its managed runtime; direct runs need `runtime.binary` or executable on PATH. |
 | No stable recommendation | Check raw sample drift, exact prompt context and execution mode. The newest eligible run may be unstable. |
 | Huge elapsed time / near-zero tokens/s | Check sleep/suspension, swap, host load and thermal conditions; preserve then rerun the experiment. |

@@ -1,5 +1,104 @@
 # 🧪 Benchmark design and interpretation
 
+## 📋 Declare one experiment
+
+Save this as `benchmark.yaml` (also available as
+[examples/benchmark.yaml](../examples/benchmark.yaml)):
+
+```yaml
+apiVersion: modelgauge.io/v1alpha1
+kind: Benchmark
+metadata:
+  # An experiment name identifies one immutable run. Change it for a new run.
+  name: qwen-baseline-001
+spec:
+  nodes: [benchmark-node]
+  # Install every model on every listed node before applying.
+  models: [qwen2.5-1.5b-instruct:q4_k_m]
+  matrix:
+    threads: [1, 2]
+    contexts: [512]
+  # Stages execute in this order for each node/model pair, under one lock.
+  stages:
+    - profile: standard-cpu
+      options:
+        warmups: 3
+        repetitions: 5
+    - profile: node-serving
+      options:
+        warmups: 2
+      config:
+        suite: basic
+        concurrency: [1, 2]
+        requests: 10
+        output_tokens: 128
+```
+
+```sh
+modelgauge validate -f benchmark.yaml
+modelgauge apply -f benchmark.yaml --dry-run
+modelgauge apply -f benchmark.yaml
+modelgauge status -f benchmark.yaml
+# Stop queued/active work, preserving completed evidence:
+modelgauge cancel -f benchmark.yaml
+```
+
+The controller resolves installed model paths, checksums and node execution mode;
+users do not need to know node directories. Install every model on every listed
+node first. Preflight validates the entire matrix before atomically saving the
+experiment and queuing any jobs. Dry-run returns the resolved plans and defaults
+without creating jobs. It does not launch a model or prove thermal stability.
+
+`metadata.name` identifies one immutable measurement across CLI machines. Reapply
+the same file to retrieve the same jobs, including after an interrupted submission
+or lost response. Editing the specification under that name fails. Change the name
+for a new run. Comments and YAML key order do not change identity. The controller
+keeps the original specification, resolved defaults, model paths/checksums and job
+IDs. Retries reuse that snapshot even if inventory or module defaults change.
+Status and cancel compare the file with the saved specification. Existing named
+experiments remain queryable/cancellable if a module is removed from the registry.
+
+Each node/model pair becomes one ordered suite. Stages expand through the benchmark
+registry: `standard-cpu` adds direct throughput/RSS, `node-serving` adds a temporary
+server per thread setting, and `deployment` is a convenience profile combining
+both. Suites from a profile are flattened into the requested order. The same
+GGUF/checksum is used by every stage. One node lock spans the whole suite; each
+runtime exits and is reaped before the next starts. Failure/cancellation prevents
+later stages. Different models on one node are serialized; separate physical
+nodes can run independently. VMs on the same host still share its thermal/memory
+budget. The local load generator shares the measured VM's CPU and RAM.
+
+### ⚙️ Declaration fields and defaults
+
+- `apiVersion: modelgauge.io/v1alpha1`, `kind: Benchmark`: versioned user schema.
+- `metadata.name`: controller-wide name, 1–63 lowercase letters/digits/hyphens,
+  beginning with a letter or digit.
+- `spec.nodes`, `spec.models`: unique IDs, 1–32 each, at most 128 pairs.
+- `spec.matrix.threads`: defaults to `[1, 2]`; unique positive integers, at most 16.
+- `spec.matrix.contexts`: defaults to `[512, 4096, 8192]`; unique positive integers,
+  at most 16. For node-serving prompt fixtures, use an explicit `contexts: []`.
+- `spec.stages`: ordered profiles, 1–32 expanded module plans per pair.
+- `stages[].options.warmups`: positive warmup count; default 3 direct repetitions
+  or 2 serving requests. These prepare caches/load, not guaranteed thermal equilibrium.
+- `stages[].options.repetitions`: measured direct repetitions, default 5.
+  Serving uses `config.requests` instead; an unsupported repetitions setting fails.
+- `stages[].config`: module-owned YAML object. Unknown settings fail in that module;
+  `standard-cpu` currently accepts no config. Examples below cover node-serving.
+
+YAML must contain one document, at most 2 MiB. Duplicate/unknown fields, wrong
+scalar types, aliases/merges, and unsupported tags fail. Expanded snapshots are
+limited to 16 MiB. There is no templating, file watching, CRD/operator, implicit
+model download, credential field, VM sizing, or inference URL in the declaration.
+The existing JSON execution protocol remains unchanged. Flag-based campaign/plan
+creation is retired; historical JSON plans, results and exports remain supported.
+
+Results contain separate typed stage reports. Direct cases and memory remain
+available to the existing recommendation logic. Exports include `suite-results.csv`
+with complete stage JSON; serving Prometheus metrics carry `stage` labels. Raw
+artifacts are stored under stage directories in the node's run evidence bundle.
+The local load generator shares the measured VM's CPU and RAM with the model.
+
+
 [Documentation home](../README.md) · [CLI reference](CLI.md) · [Recovery](operations/JOB-RECOVERY.md)
 
 The [historical benchmark report](HISTORICAL-BENCHMARKS.md) includes archived
@@ -13,7 +112,7 @@ llama.cpp revision/build, execution mode, CPU allocation and case shapes. Changi
 these changes the experiment. A higher quantization can be faster on a particular
 CPU/kernel; file size alone does not predict throughput.
 
-Start with a single short-context campaign. Add contexts and models after the
+Start with a single short-context experiment. Add contexts and models after the
 workflow is healthy. The default large matrix can take a long time on the Intel Air.
 
 ## 📋 Standard CPU matrix
@@ -78,101 +177,82 @@ It does not search all older runs when the newest eligible run is unstable,
 and it does not currently enforce a minimum sample count beyond plan validation.
 Use at least the standard repetitions for comparisons; keep the raw samples.
 
-## 🌐 Benchmarks against an existing inference endpoint
+## 🧪 Serving benchmarks on the measured node
 
-These commands are in the current source; v0.2.2 predates serving benchmarks.
-Build the updated application to use them. No Lima, Kubernetes, monitoring,
-database schema or inference-server provisioning changes are required. Queued
-plans require matching updated controller and agent application binaries.
+`node-serving` uses the installed GGUF model inventory and the normal controller/agent queue.
+The CLI does not generate inference traffic. The benchmark module starts a temporary
+`llama-server` on the measured Linux node, binds it to a free loopback port, verifies the
+model checksum and records the runtime checksum, warms it up, measures it and stops only its own process group.
+The model process and load generator share the node's resources; these measurements
+include the overhead of that local load generator.
 
-The serving runner connects to an endpoint you already operate. It does not
-start, stop, restart, load, unload or reconfigure an inference server. Model
-selection is a request to an already configured endpoint/router, not a verified
-model-switch operation. Requested and observed model aliases are recorded.
+New node bootstraps build llama-server alongside llama-bench. Existing nodes need an
+updated agent/runtime: rerun `node bootstrap` for the same managed node before using this
+profile. No Kubernetes manifests, database migrations or additional services are needed.
+Use matching updated CLI, controller and agent binaries. v0.3.0's standalone endpoint
+commands are replaced by YAML declarations; old stored reports still export normally.
 
-### 🚀 Small serving experiment
-
-Use the model alias accepted by your existing server. The endpoint must be
-reachable from the machine executing the benchmark. For an agent job, localhost
-means the agent's Linux node, not your CLI laptop or controller.
-
-```sh
-go build -o bin/modelgauge ./cmd/modelgauge
-
-bin/modelgauge benchmark serving plan \
-  --endpoint http://127.0.0.1:8080 --model my-model \
-  --concurrency 1,2 --requests 20 --output-tokens 128 \
-  --ttft-ms 3000 --tpot-ms 200 --latency-ms 60000 \
-  --output serving.json
-
-bin/modelgauge plan validate serving.json
-bin/modelgauge benchmark serving run --plan serving.json --output results/serving
-bin/modelgauge benchmark serving report --file results/serving/result.json --format csv
-```
-
-The example latency targets are illustrative, not recommended universal limits.
-The JSON result reports failed requests as measurements: a completed experiment
-does not mean every request succeeded or its quality/latency targets passed.
-
-For existing-node execution, generate the plan with the registered `--node` and
-matching `--execution-mode`, then use the normal safe submission path:
+For serving only, keep just the `node-serving` stage in a new named YAML file:
 
 ```sh
-bin/modelgauge benchmark serving plan \
-  --endpoint http://127.0.0.1:8080 --model my-model \
-  --node benchmark-node --execution-mode lima-linux \
-  --output serving-node.json
-bin/modelgauge benchmark submit --plan serving-node.json
-bin/modelgauge results show --node benchmark-node
+modelgauge apply -f serving.yaml --dry-run
+modelgauge apply -f serving.yaml
+modelgauge status -f serving.yaml
+modelgauge results show --node benchmark-node
 ```
 
-Provide inference authentication through `MODELGAUGE_INFERENCE_TOKEN` on the
-executing client/agent. Tokens are not plan fields. An optional metrics endpoint
-uses `MODELGAUGE_INFERENCE_METRICS_TOKEN`; the inference token is reused only for
-the same scheme/host/port. Redirects and credentials/query strings in endpoint
-URLs are refused. Generated answers and tool arguments are omitted from raw
-evidence unless `--record-outputs` is selected. Prompt fixtures themselves are
-stored in the private plan: treat evidence as potentially sensitive.
+Each thread count gets its own process/stage. Models, including different quantizations,
+are tested sequentially by the agent. Each process has parallel slots matching the
+highest requested concurrency; configured context is per slot and the server receives
+its total across slots. Automatic runtime fitting and the additional RAM prompt cache
+are disabled; normal per-slot KV reuse is still available to explicit cache probes.
+CPU-only is the default. Context is allocated to fit the largest
+requested input plus output/headroom, so this profile consumes more RAM than llama-bench.
+Start with a small model, context and concurrency on an 8 GiB host.
 
-### 📋 Deployment suite and experiment dimensions
+### ⚙️ Module configuration
 
-```sh
-bin/modelgauge benchmark serving plan \
-  --endpoint http://127.0.0.1:8080 --model my-model --api llama.cpp \
-  --suite deployment --contexts 128,512,4096 --concurrency 1,2 \
-  --requests 20 --sustain-duration 2m --request-timeout 20m \
-  --metrics-url http://127.0.0.1:8080/metrics \
-  --output deployment.json
+Place these settings under a node-serving stage’s `config` object (JSON notation
+is also valid inside YAML):
+
+```json
+{
+  "api": "llama.cpp",
+  "suite": "deployment",
+  "concurrency": [1, 2],
+  "requests": 10,
+  "output_tokens": 128,
+  "sustain_seconds": 60,
+  "request_timeout_seconds": 120,
+  "readiness_timeout_seconds": 300,
+  "sample_interval_seconds": 1,
+  "gpu_layers": 0,
+  "targets": {"ttft_ms": 3000, "tpot_ms": 200, "latency_ms": 60000}
+}
 ```
 
-`deployment` adds sustained load, fixed-rate bursts, a small JSON-format quality
-smoke test, and cancellation followed by a recovery request. Native llama.cpp
-also gets cache-off/cache-on cases. OpenAI-compatible endpoints get a small
-multi-turn conversation instead: cache policy is server-controlled in that API.
-Explicit native `cache_prompt` settings are never claimed for a generic OpenAI
-endpoint. Add `--idle-before 1m` for a first request after idle, or
-`--switch-models model-a,model-b,model-a` to observe sequential requested aliases.
-Neither experiment proves a cold model load or unload occurred.
+Include the object directly under `spec.stages[].config`; no separate config file is needed.
+An optional `cases` array replaces the generated case suite, so you can select or remove
+workloads without changing platform code. Case fields follow `benchmark.config.cases`
+in the generated plan. The targets above are examples, not universal performance requirements. `basic` runs only
+the context/concurrency load cases. `deployment` also runs sustained load, an open-loop
+burst with recovery, cache-on/cache-off probes (native API), a format smoke check,
+cancellation/recovery and idle-resume. Selecting `api: "openai"` uses chat completions
+and replaces the explicit cache probes with a conversation check.
 
-Synthetic `--contexts` require the endpoint's llama.cpp `/tokenize` and
-`/detokenize` routes. Native completion uses exact input token IDs. Chat input
-length is a **content-token target**: template/history overhead can add tokens;
-actual server-reported usage is recorded. For other servers, supply real fixture
-texts/messages and use their reported counts. Word counts are never substituted
-for token counts. Compare different hardware/runtime settings using separately
-configured endpoints/runs; this runner does not change server thread counts,
-batch sizes, GPU offload, KV types, power modes or physical-host workloads.
+Cases are sequential. Closed-loop load caps in-flight requests at concurrency. Burst
+cases schedule arrivals independently and count excess arrivals as client capacity drops.
+In-flight requests drain under their deadlines. Throughput excludes warmups, startup,
+idle delays and recovery probes but includes request drain. A completed run may still
+contain failed requests or failed fixture checks: inspect the report before comparing.
 
-Closed-loop cases keep up to `concurrency` requests active. A positive
-`--request-rate` schedules arrivals independently, with concurrency as a strict
-in-flight cap. Excess arrivals become **client capacity drops**, not imaginary
-server requests. Dispatch delay and scheduled latency expose generator lag.
-`requests` and `duration_seconds`, when both positive, stop dispatch at the first
-limit; in-flight requests then drain under their request deadlines. Time-based
-cases have a hard 100,000-request evidence limit. Throughput uses full measured
-wall time including drain, excluding warmups, idle delay, readiness and recovery
-probes. Each evidence file is bounded to 128 MiB and aggregate stream timing
-observations to one million per case; exceeding a bound fails explicitly.
+Process startup is measured from launching the process until readiness, including runtime
+initialization/model loading. It does not establish cold filesystem cache. Shutdown time
+measures process termination, not a separately instrumented model-unload operation.
+Cancellation, lease loss and errors stop the owned model process and retain evidence.
+Linux parent-death signaling also stops that process if the agent is abruptly killed.
+Recovery starts a fresh model process and reruns cases, archiving earlier evidence rather
+than merging different process/cache states.
 
 ### ⏱️ Reported measurements
 
@@ -216,11 +296,11 @@ The format smoke case is not a general reasoning, factuality or coding score.
 ]
 ```
 
-```sh
-bin/modelgauge benchmark serving plan \
-  --endpoint http://127.0.0.1:8080 --model my-model \
-  --dataset fixtures.json --output quality.json
-```
+Include the fixture array as `prompts` in the module configuration, select
+`api: "openai"` for chat messages/tools, and use `matrix.contexts: []` to disable synthetic
+inputs. Prompt text and checks are stored in the private plan. Generated outputs/tool
+arguments are omitted from raw evidence unless `record_outputs: true` is configured.
+
 
 Hand-edit `benchmark.config.cases` to build task mixes or conversation sequences. With
 `continue_conversation: true`, each closed-loop worker retains its own history,
@@ -229,19 +309,16 @@ Failed requests count as failed fixture evaluations when checks are present.
 
 ### 💾 Resource observations and unavailable measurements
 
-`--metrics-url` samples an existing endpoint's queue/KV/cache/process/GPU metrics
-from a bounded allowlist. Labels are discarded; queue gauges sum labelled series,
-other selected metrics retain the maximum across series. Histograms are not
-converted into per-request queue latency. The metrics endpoint must already be
-enabled; no scrape targets or dashboard/deployment files are modified.
+The module enables the owned server's metrics endpoint and samples its queue/KV/cache
+metrics from a bounded allowlist. Labels are discarded; queue gauges sum series and
+other selected gauges retain maxima. Histograms do not become invented per-request
+queue latency. No monitoring deployment or scrape configuration changes are required.
 
-When the benchmark runs on the Linux server node, an optional
-`--local-server-pid PID` adds read-only process RSS/PSS, lifetime RSS high-water
-mark, CPU time, I/O, page faults and context switches; node available RAM/swap,
-CPU frequency and temperature; readable CPU-package energy; and optional
-`nvidia-smi` GPU memory/utilization/power/temperature/clock observations. PID
-start identity is checked so a replacement process is not silently measured.
-The operator supplies the PID-to-endpoint association. No process is signalled.
+The managed model PID automatically supplies process RSS/PSS, lifetime peak RSS, CPU
+time, I/O, page faults and context switches. Available node RAM/swap, CPU frequency,
+temperature, readable CPU-package energy and existing NVIDIA telemetry are sampled too.
+PID start identity prevents silently sampling a replacement process. Missing sensors or
+permissions remain unavailable; VM telemetry describes the guest, not the physical host.
 
 Sampled RSS peaks are lower-bound observations, not guaranteed maximum RSS.
 Lifetime high-water RSS can predate this case. Node/GPU power includes other
@@ -249,13 +326,12 @@ workloads; package energy and GPU energy are separate and are never added
 blindly. Observation windows bracket the workload and can include collection
 overhead: inspect `observation_seconds`, sample timestamps and the chosen
 sampling interval. These are gross node energy observations, not idle-subtracted
-model energy. No local PID means no client-machine hardware values are presented
-as remote server measurements. Missing sensors/permissions/token usage are
+model energy. Process measurements belong to the owned model PID on the benchmark node. Missing sensors/permissions/token usage are
 null or explicitly unavailable, never zero-valued substitutes.
 
-Cold process startup, verified load/unload times, memory bandwidth, automated
-hardware tuning and general semantic-quality scoring remain outside this
-endpoint-only benchmark. Physical-host telemetry is not inferred from a VM.
+Separate cold-disk load timing, per-request backend queue instrumentation and general
+semantic quality grading remain unavailable. Neither cancellation acknowledgement nor
+shutdown duration proves a particular backend memory-reclamation policy.
 
 ### 📁 Results, export and interruption
 
@@ -266,7 +342,7 @@ engine-only result CSV remains unchanged. Node export adds `serving-results.csv`
 when serving data exists, and `results.json` contains the complete report.
 Summary data uses the existing database JSON fields, with no schema migration.
 Serving measurements never feed the engine thread/memory-fit recommender.
-Older top-level `serving` plan/results and stored reports remain readable.
+Historical results and stored reports remain readable; old endpoint plans must be regenerated as managed-node plans.
 Summaries are limited to 2.5 MiB for the existing completion API. If a summary
 exceeds that limit, the run fails explicitly and retains the detailed report on
 the execution node; the agent uploads the failure and evidence hashes instead
@@ -278,24 +354,23 @@ throughput, goodput, fixture pass ratio, sampled RSS and CPU-package energy gaug
 They describe the latest completed serving run per node/model/execution mode,
 not continuous inference speed. Existing monitoring collects `/metrics` normally.
 
-On interruption, owned HTTP requests close and partial evidence is retained;
-the external server is not restarted or killed. Agent retries reuse completed
-case checkpoints and archive interrupted case files before remeasurement.
-Externally managed endpoint identity cannot be guaranteed unchanged across
-recovery; the report records that limitation. A local CLI run requires a fresh
-output directory. Keep the raw evidence and use a new plan for a new experiment.
+On interruption, owned HTTP requests close, the owned model process stops, and partial
+evidence is retained. Agent recovery archives prior case files and remeasures all cases
+with a fresh process. A local direct run requires a fresh output directory. Keep raw
+evidence and use a new declaration name for a new experiment.
 
 ### 🔧 Adding or removing a benchmark
 
 Benchmark modules live in `internal/benchmark`. Add a module and tests, then one
-entry in `implementations` in `registry.go`. The module owns config validation,
+entry in `implementations` in `registry.go`. The module owns its profile name and planner, config validation,
 execution with the supplied context, result validation, and optional CSV/metrics
 formatters. Use the common `benchmark.kind/config` and `benchmark.kind/data`
 envelopes; the existing `benchmark run` and submission paths dispatch them.
 No agent, controller, database schema, exporter or infrastructure branch is needed.
 Removing an entry rejects new jobs of that kind; historical JSON stays readable
-and exportable, while its removed CSV/metrics formatter is skipped. Custom CLI
-plan builders are optional. Existing engine fields remain for compatibility.
+and exportable, while its removed CSV/metrics formatter is skipped. Module-specific
+settings arrive through the YAML stage’s `config`; there is no benchmark-specific CLI to update.
+Existing engine fields remain for compatibility.
 
 ## 💾 Memory measurement
 
@@ -314,15 +389,13 @@ with zero prompt, so they do not measure long-context decode throughput.
 The standard profile stores one memory measurement at its largest selected
 context/highest selected threads. The current recommendation reuses that run's
 reservation; it does not interpolate a context-memory curve. To compare memory
-at several prompt sizes, create separate one-context campaigns:
+at several prompt sizes, create separate one-context declarations with different
+names (for example `memory-512` and `memory-4096`), a `standard-cpu` stage, and
+`spec.matrix.contexts: [512]` or `[4096]`:
 
 ```sh
-modelgauge benchmark campaign create --node benchmark-node --execution-mode lima-linux \
-  --models qwen2.5-1.5b-instruct:q4_k_m --contexts 512 --threads 1,2 \
-  --output campaigns/memory-512 --submit
-modelgauge benchmark campaign create --node benchmark-node --execution-mode lima-linux \
-  --models qwen2.5-1.5b-instruct:q4_k_m --contexts 4096 --threads 1,2 \
-  --output campaigns/memory-4096 --submit
+modelgauge apply -f memory-512.yaml
+modelgauge apply -f memory-4096.yaml
 ```
 
 Inspect memory workload files and future combined-prefill/decode experiments

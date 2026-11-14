@@ -3,8 +3,11 @@ package agent
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -58,5 +61,37 @@ func TestHeartbeatBusyAndStop(t *testing.T) {
 		case <-deadline:
 			t.Fatal("no online heartbeat after workload")
 		}
+	}
+}
+
+func TestUnreachableNodeIsMarkedOfflineBeforeRetry(t *testing.T) {
+	connection, _ := testSSHNode(t)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	connection.Address = listener.Addr().String()
+	listener.Close()
+	updates := make(chan string, 4)
+	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if strings.HasSuffix(r.URL.Path, "/heartbeat") {
+			var heartbeat heartbeatRequest
+			if err := json.NewDecoder(r.Body).Decode(&heartbeat); err != nil {
+				t.Error(err)
+			}
+			updates <- heartbeat.Status
+		}
+		w.WriteHeader(204)
+	}))
+	defer api.Close()
+	_, err = RunOnce(context.Background(), Config{SSH: &connection, NodeID: "node", Token: "token", ControllerURL: api.URL, ResultsDir: t.TempDir()})
+	if !errors.Is(err, errWorkerTransport) {
+		t.Fatal(err)
+	}
+	if len(updates) != 1 {
+		t.Fatal("missing offline heartbeat", len(updates))
+	}
+	if state := <-updates; state != "offline" {
+		t.Fatal("unreachable node reported online", state)
 	}
 }

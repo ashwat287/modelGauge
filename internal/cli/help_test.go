@@ -10,15 +10,14 @@ import (
 
 func TestHelpWorksWithoutInfrastructure(t *testing.T) {
 	for _, command := range []string{
-		"--help", "export --help", "help export", "cleanup --help", "help cleanup", "help benchmark", "help model install", "control --help",
+		"--help", "apply --help", "validate --help", "status --help", "cancel --help", "export --help", "help export", "cleanup --help", "help cleanup", "help benchmark", "help model install", "control --help",
 		"control bootstrap --help", "control status --help", "node --help",
-		"node bootstrap --help", "node status --help", "model --help",
+		"node bootstrap --help", "node reconnect --help", "node status --help", "model --help",
 		"model install --help", "model install status --help", "model install cancel --help",
 		"model list --help", "model search --help", "benchmark --help",
-		"benchmark campaign create --help", "benchmark campaign status --help",
-		"benchmark plan create --help", "benchmark run --help", "benchmark submit --help",
+		"benchmark campaign status --help",
+		"benchmark run --help", "benchmark submit --help",
 		"benchmark cancel --help", "results show --help", "results recommend --help",
-		"benchmark serving --help", "benchmark serving plan --help", "benchmark serving run --help", "benchmark serving report --help",
 		"agent run --help", "agent install --help", "server --help", "monitoring --help",
 	} {
 		t.Run(command, func(t *testing.T) {

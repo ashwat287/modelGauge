@@ -65,7 +65,7 @@ func buildImage(ctx context.Context, name, source string, log io.Writer) (string
 	descriptor := func(media string, data []byte) map[string]any {
 		return map[string]any{"mediaType": media, "digest": digest(data), "size": len(data)}
 	}
-	config, _ := json.Marshal(map[string]any{"architecture": arch, "os": "linux", "config": map[string]any{"Entrypoint": []string{"/usr/local/bin/modelgauge"}}, "rootfs": map[string]any{"type": "layers", "diff_ids": []string{digest(layer.Bytes())}}})
+	config, _ := json.Marshal(map[string]any{"architecture": arch, "os": "linux", "config": map[string]any{"Entrypoint": []string{"/usr/local/bin/modelgauge"}, "User": "65532:65532"}, "rootfs": map[string]any{"type": "layers", "diff_ids": []string{digest(layer.Bytes())}}})
 	manifest, _ := json.Marshal(map[string]any{"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": descriptor("application/vnd.oci.image.config.v1+json", config), "layers": []any{descriptor("application/vnd.oci.image.layer.v1.tar", layer.Bytes())}})
 	// Content-addressed tags make repeat applies idempotent and ensure upgrades
 	// schedule the intended image without relying on a mutable local tag.

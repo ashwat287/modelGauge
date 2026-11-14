@@ -4,7 +4,9 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/agent"
 	"log/slog"
+	"net"
 	"os"
 	"time"
 
@@ -16,6 +18,7 @@ func runServer(ctx context.Context, args []string, stdout, stderr interface{ Wri
 	flags := flag.NewFlagSet("server", flag.ContinueOnError)
 	setFlagOutput(flags, stderr)
 	listenAddress := flags.String("listen", ":8080", "HTTP listen address")
+	executorState := flags.String("executor-state-dir", os.Getenv("MODELGAUGE_EXECUTOR_STATE_DIR"), "persistent controller executor directory")
 	migrate := flags.Bool("migrate", true, "apply embedded database migrations at startup")
 	if err := flags.Parse(args); err != nil {
 		return flagExitCode(err)
@@ -64,8 +67,26 @@ func runServer(ctx context.Context, args []string, stdout, stderr interface{ Wri
 		}
 	}()
 	defer func() { cancelReap(); <-reapDone }()
+	var executor *agent.ControllerExecutor
+	if *executorState != "" {
+		host, port, e := net.SplitHostPort(*listenAddress)
+		if e != nil {
+			fmt.Fprintln(stderr, e)
+			return 2
+		}
+		if host == "" || host == "0.0.0.0" || host == "::" {
+			host = "127.0.0.1"
+		}
+		executor, e = agent.NewControllerExecutor(ctx, *executorState, "http://"+net.JoinHostPort(host, port), agentToken)
+		if e != nil {
+			fmt.Fprintf(stderr, "start controller executor: %v\n", e)
+			return 1
+		}
+		defer executor.Close()
+	}
 	api := server.New(store, server.Config{
 		AgentToken: agentToken,
+		Executor:   executor,
 		AdminToken: server.AdminTokenFromEnv(os.Getenv),
 		Logger:     logger,
 	})

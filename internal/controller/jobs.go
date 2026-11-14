@@ -49,7 +49,7 @@ func nodeHasJob(ctx context.Context, tx pgx.Tx, node string) (bool, error) {
 	return busy, err
 }
 
-func (s *Store) leaseInstall(ctx context.Context, node string) (InstallJob, error) {
+func (s *Store) LeaseInstall(ctx context.Context, node string) (InstallJob, error) {
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
 		return InstallJob{}, err
@@ -108,7 +108,7 @@ func (s *Store) Cancel(ctx context.Context, id string, install bool) error {
 	return nil
 }
 
-func (s *Store) completeInstall(ctx context.Context, node, id, token, failure string) error {
+func (s *Store) CompleteInstall(ctx context.Context, node, id, token, failure string) error {
 	status := "completed"
 	if failure != "" {
 		status = "failed"

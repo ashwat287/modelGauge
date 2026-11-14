@@ -6,9 +6,7 @@ import (
 	"debug/elf"
 	"errors"
 	"fmt"
-	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
-	"net/url"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -16,15 +14,18 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nerdylucifer/modelgauge/internal/agent"
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
-	"github.com/nerdylucifer/modelgauge/internal/client"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/internal/releases"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 // This is the upstream revision used by the existing validated Linux fixture.
 const LlamaRevision = "eb4e244be77a906a183cd4a00fd51d9ad3200955"
 
 type NodeOptions struct {
+	queuedJobsPaused                    bool
 	Name, Source, AgentBinary, Revision string
 	CPUs, MemoryGiB, DiskGiB            int
 	Log                                 io.Writer
@@ -54,32 +55,50 @@ func BootstrapNode(ctx context.Context, c Config, o NodeOptions) (resultErr erro
 	if c.AgentToken == "" {
 		return fmt.Errorf("saved connection has no agent credential; rerun control bootstrap")
 	}
-	endpoint, err := url.Parse(c.ControllerURL)
+	unlock, err := platform.Lock("agent-" + o.Name)
+	if err != nil {
+		return fmt.Errorf("stop the external executor before upgrading: %w", err)
+	}
+	defer unlock()
+
+	home, err := os.UserHomeDir()
 	if err != nil {
 		return err
 	}
-	guestURL := c.ControllerURL
-	if endpoint.Hostname() == "127.0.0.1" || endpoint.Hostname() == "localhost" {
-		var port int
-		if _, err = fmt.Sscan(endpoint.Port(), &port); err != nil {
-			return fmt.Errorf("saved controller URL needs an explicit port")
-		}
-		if err = Forward(ctx, c.VM, "benchmark-system", "modelgauge-controller", port, 8080, "/healthz"); err != nil {
-			return err
-		}
-		endpoint.Host = "host.lima.internal:" + endpoint.Port()
-		guestURL = endpoint.String()
+	if _, err = os.Lstat(filepath.Join(home, ".local/share/modelgauge/executors", o.Name, ".pending.json")); err == nil {
+		return fmt.Errorf("external executor has pending work; finish recovery before upgrading")
+	} else if !os.IsNotExist(err) {
+		return err
 	}
+
+	if err = connectionAction(ctx, c, o.Name, "pause"); err != nil {
+		return fmt.Errorf("pause controller executor (update the control deployment first): %w", err)
+	}
+	defer func() {
+		if resultErr != nil {
+			restore, cancel := context.WithTimeout(context.Background(), 20*time.Second)
+			defer cancel()
+			resultErr = errors.Join(resultErr, connectionAction(restore, c, o.Name, "resume"))
+		}
+	}()
 
 	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "benchmark", o.CPUs, o.MemoryGiB, o.DiskGiB, 0, o.Log, o)
 	if err != nil {
 		return err
 	}
 	defer completeProvision(ctx, finishOwnership, &resultErr)
+	manager, _ := ctx.Value(ownershipContextKey{}).(*ownershipManager)
+	if manager == nil {
+		return fmt.Errorf("benchmark provisioning ownership context is missing")
+	}
+	if err = manager.checkNodeForward(ctx, c, o.Name); err != nil {
+		return err
+	}
+
 	preflight := `set -euo pipefail
 if command -v k3s >/dev/null; then echo 'Refusing a benchmark VM with k3s installed'; exit 1; fi
-if pgrep -x llama-bench >/dev/null; then echo 'A benchmark is active; retry after it completes'; exit 1; fi
-curl -fsS --connect-timeout 5 --max-time 15 ` + quote(guestURL+"/healthz") + ` >/dev/null
+if pgrep -x 'llama-bench|llama-server' >/dev/null; then echo 'A benchmark is active; retry after it completes'; exit 1; fi
+
 `
 	if err = shell(ctx, o.Name, preflight, nil, o.Log); err != nil {
 		return err
@@ -124,7 +143,7 @@ revision=` + quote(o.Revision) + `
 base="$HOME/.local/share/modelgauge/runtime"
 destination="$base/$revision"
 mkdir -p "$destination"
-if [ ! -x "$destination/llama-bench" ]; then
+if [ ! -x "$destination/llama-bench" ] || [ ! -x "$destination/llama-server" ]; then
  source_dir="$destination/source"
  if [ ! -d "$source_dir/.git" ]; then
   git init "$source_dir"
@@ -133,11 +152,13 @@ if [ ! -x "$destination/llama-bench" ]; then
  git -C "$source_dir" fetch --depth=1 origin "$revision"
  git -C "$source_dir" checkout --detach FETCH_HEAD
  test "$(git -C "$source_dir" rev-parse HEAD)" = "$revision"
- cmake -S "$source_dir" -B "$destination/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DLLAMA_BUILD_TESTS=OFF
- cmake --build "$destination/build" --target llama-bench -j ` + fmt.Sprint(o.CPUs) + `
+ cmake -S "$source_dir" -B "$destination/build" -DCMAKE_BUILD_TYPE=Release -DBUILD_SHARED_LIBS=OFF -DGGML_NATIVE=OFF -DGGML_OPENMP=OFF -DGGML_BLAS=OFF -DGGML_CUDA=OFF -DGGML_VULKAN=OFF -DLLAMA_BUILD_TESTS=OFF -DLLAMA_BUILD_SERVER=ON -DLLAMA_BUILD_UI=OFF -DLLAMA_USE_PREBUILT_UI=OFF
+ cmake --build "$destination/build" --target llama-bench llama-server -j ` + fmt.Sprint(o.CPUs) + `
  install -m 755 "$destination/build/bin/llama-bench" "$destination/llama-bench"
+ install -m 755 "$destination/build/bin/llama-server" "$destination/llama-server"
 fi
 "$destination/llama-bench" --help >/dev/null
+"$destination/llama-server" --help >/dev/null
 printf '%s\n' "$revision" > "$destination/revision"
 ln -sfn "$destination" "$base/current"
 mkdir -p "$HOME/.local/bin" "$HOME/.local/share/modelgauge/models"
@@ -165,35 +186,23 @@ mkdir -p "$HOME/.local/bin" "$HOME/.local/share/modelgauge/models"
 		return err
 	}
 
-	enrolledAfter := time.Now().UTC().Add(-5 * time.Second)
-	install := `set -euo pipefail
-IFS= read -r MODELGAUGE_AGENT_TOKEN
-export MODELGAUGE_AGENT_TOKEN
-"$HOME/.local/bin/modelgauge" agent install --controller ` + quote(guestURL) + ` --node ` + quote(o.Name) + ` --name ` + quote(o.Name) + ` --kind virtual --execution-mode lima-linux --results-dir "$HOME/.local/share/modelgauge/results"
-sudo loginctl enable-linger "$(id -un)"
-systemctl --user restart modelgauge-agent
-`
-	if err = shell(ctx, o.Name, install, strings.NewReader(c.AgentToken+"\n"), o.Log); err != nil {
+	if err = agent.SyncNode(ctx, agent.Config{ControllerURL: c.ControllerURL, Token: c.AgentToken, TargetVM: o.Name, NodeID: o.Name, DisplayName: o.Name, NodeKind: "virtual", ExecutionMode: protocol.ExecutionModeLima}); err != nil {
 		return err
 	}
-
-	api := &client.Client{BaseURL: c.ControllerURL, AdminToken: c.AdminToken}
-	for attempt := 0; attempt < 30; attempt++ {
-		var status struct {
-			Status     string     `json:"status"`
-			LastSeenAt *time.Time `json:"last_seen_at"`
-		}
-		if _, err := api.DoJSON(ctx, "GET", "/v1/nodes/"+o.Name, "admin", nil, &status); err == nil && status.Status == "online" && status.LastSeenAt != nil && status.LastSeenAt.After(enrolledAfter) {
-			fmt.Fprintf(o.Log, "Benchmark node %s is online (Linux, llama.cpp %s).\n", o.Name, o.Revision)
-			return nil
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
+	// The old node service is retired only after its replacement binary is installed.
+	if err = shell(ctx, o.Name, `set -euo pipefail
+state=$(systemctl --user show modelgauge-agent.service -p LoadState --value 2>/dev/null || true)
+if [ "$state" = loaded ]; then "$HOME/.local/bin/modelgauge" agent uninstall; fi
+rm -f "$HOME/.config/modelgauge/agent.env"
+sudo loginctl enable-linger "$(id -un)"
+`, nil, o.Log); err != nil {
+		return err
 	}
-	return fmt.Errorf("agent did not register in time; inspect modelgauge node status %s and the node's systemd service", o.Name)
+	if err = manager.enrollControllerExecutor(ctx, c, o.Name); err != nil {
+		return err
+	}
+	fmt.Fprintf(o.Log, "Benchmark node %s is ready. Its executor runs inside the controller.\n", o.Name)
+	return nil
 }
 
 func nodeBinary(ctx context.Context, o NodeOptions, arch string) ([]byte, error) {

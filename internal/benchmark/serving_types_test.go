@@ -8,7 +8,7 @@ import (
 func TestServingPlanTrustBoundaries(t *testing.T) {
 	for _, mutation := range []string{"valid", "credentials", "query", "bad-api", "bad-id", "unbounded", "conversation-api", "cache-control", "negative-target", "secret-setting"} {
 		t.Run(mutation, func(t *testing.T) {
-			s := ServingPlan{Endpoint: "http://127.0.0.1:8080", API: "openai", RequestTimeout: 10, ReadinessTimeout: 1, SampleInterval: 1, Cases: []ServingCase{{ID: "load", Concurrency: 1, Requests: 2, OutputTokens: 16}}}
+			s := servingPlan{Endpoint: "http://127.0.0.1:8080", API: "openai", RequestTimeout: 10, ReadinessTimeout: 1, SampleInterval: 1, Cases: []servingCase{{ID: "load", Concurrency: 1, Requests: 2, OutputTokens: 16}}}
 			switch mutation {
 			case "credentials":
 				s.Endpoint = "http://user:password@localhost:8080"
@@ -38,7 +38,7 @@ func TestServingPlanTrustBoundaries(t *testing.T) {
 }
 
 func TestServingReportRejectsIncoherentAndOversizedSummaries(t *testing.T) {
-	report := ServingReport{SchemaVersion: "modelgauge-serving/v1", Endpoint: "http://localhost:8080", Cases: []ServingCaseResult{{ID: "load", ElapsedSeconds: 1, Offered: 2, Dispatched: 1, Successful: 1, ClientCapacityDrops: 1}}}
+	report := servingReport{SchemaVersion: "modelgauge-serving/v1", Endpoint: "http://localhost:8080", Cases: []servingCaseResult{{ID: "load", ElapsedSeconds: 1, Offered: 2, Dispatched: 1, Successful: 1, ClientCapacityDrops: 1}}}
 	if err := report.Validate(); err != nil {
 		t.Fatal(err)
 	}

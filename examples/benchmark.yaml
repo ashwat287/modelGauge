@@ -1,0 +1,26 @@
+apiVersion: modelgauge.io/v1alpha1
+kind: Benchmark
+metadata:
+  # An experiment name identifies one immutable run. Change it for a new run.
+  name: qwen-baseline-001
+spec:
+  nodes: [benchmark-node]
+  # Install every model on every listed node before applying.
+  models: [qwen2.5-1.5b-instruct:q4_k_m]
+  matrix:
+    threads: [1, 2]
+    contexts: [512]
+  # Stages execute in this order for each node/model pair, under one lock.
+  stages:
+    - profile: standard-cpu
+      options:
+        warmups: 3
+        repetitions: 5
+    - profile: node-serving
+      options:
+        warmups: 2
+      config:
+        suite: basic
+        concurrency: [1, 2]
+        requests: 10
+        output_tokens: 128

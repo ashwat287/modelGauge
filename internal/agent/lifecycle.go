@@ -35,9 +35,6 @@ func ConfigPath(home string) string {
 	return filepath.Join(home, ".config", "modelgauge", "agent.env")
 }
 
-func Install(options InstallOptions) (ServiceStatus, error) {
-	return InstallContext(context.Background(), options)
-}
 func InstallContext(ctx context.Context, options InstallOptions) (ServiceStatus, error) {
 	if runtime.GOOS != "linux" {
 		return ServiceStatus{}, fmt.Errorf("agent installation requires Linux; on a Mac, install inside a Lima Linux VM")
@@ -91,7 +88,6 @@ func InstallContext(ctx context.Context, options InstallOptions) (ServiceStatus,
 	return StatusContext(ctx)
 }
 
-func Status() (ServiceStatus, error) { return StatusContext(context.Background()) }
 func StatusContext(ctx context.Context) (ServiceStatus, error) {
 	home, err := os.UserHomeDir()
 	if err != nil {
@@ -115,7 +111,6 @@ func StatusContext(ctx context.Context) (ServiceStatus, error) {
 	return ServiceStatus{}, fmt.Errorf("agent status requires Linux; on a Mac, run inside a Lima Linux VM")
 }
 
-func Uninstall() error { return UninstallContext(context.Background()) }
 func UninstallContext(ctx context.Context) error {
 	home, err := os.UserHomeDir()
 	if err != nil {

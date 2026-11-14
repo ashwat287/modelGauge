@@ -27,7 +27,7 @@ func TestEmbeddedEvidenceStreamRoundTrip(t *testing.T) {
 		t.Fatal(err)
 	}
 	output := t.TempDir()
-	if err = evidence.ReceiveArchive(bytes.NewReader(stream.Bytes()), output, []protocol.EvidenceRef{ref}); err != nil {
+	if err = evidence.ReceiveArchiveContext(context.Background(), bytes.NewReader(stream.Bytes()), output, []protocol.EvidenceRef{ref}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(filepath.Join(output, ref.RunID, ref.Name))

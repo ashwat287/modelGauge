@@ -11,6 +11,7 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
+	"net"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -47,18 +48,20 @@ type ownershipRegistry struct {
 	VMs    []ownedVM `json:"vms"`
 }
 type limaInstance struct {
-	Name      string `json:"name"`
-	Dir       string `json:"dir"`
-	Status    string `json:"status"`
-	Protected bool   `json:"protected"`
-	Config    struct {
+	Name         string `json:"name"`
+	SSHLocalPort int    `json:"sshLocalPort"`
+	Dir          string `json:"dir"`
+	Status       string `json:"status"`
+	Protected    bool   `json:"protected"`
+	Config       struct {
 		Env map[string]string `json:"env"`
 	} `json:"config"`
 }
 type ownershipManager struct {
-	directory string
-	binary    func(context.Context, string) ([]byte, error)
-	run       func(context.Context, []string, []byte) ([]byte, error)
+	allowQueued bool
+	directory   string
+	binary      func(context.Context, string) ([]byte, error)
+	run         func(context.Context, []string, []byte) ([]byte, error)
 }
 type ownershipContextKey struct{}
 
@@ -224,10 +227,11 @@ func verifyVM(v ownedVM, instance limaInstance) error {
 	return nil
 }
 func (m *ownershipManager) guest(ctx context.Context, v ownedVM, operation string, files []string) ([]byte, error) {
-	payload, err := ownershipPayload(v, operation, files)
+	payload, err := ownershipPayload(v, operation, files, m.allowQueued)
 	if err != nil {
 		return nil, err
 	}
+
 	binary, err := m.readHelper(v)
 	if err != nil {
 		return nil, err
@@ -271,6 +275,7 @@ func provisionVM(ctx context.Context, name, role string, cpus, memory, disk, por
 		}
 	}
 	m.binary = func(ctx context.Context, arch string) ([]byte, error) { return nodeBinary(ctx, options, arch) }
+	m.allowQueued = options.queuedJobsPaused
 	return m.provision(ctx, name, role, cpus, memory, disk, port, log)
 }
 func (m *ownershipManager) provision(ctx context.Context, name, role string, cpus, memory, disk, port int, log io.Writer) (managed context.Context, done func() error, resultErr error) {
@@ -314,6 +319,7 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 	}
 	if index >= 0 {
 		if !exists {
+
 			return ctx, nil, fmt.Errorf("tracked VM %s is missing; run cleanup to clear stale ownership before recreating it", name)
 		}
 		if registry.VMs[index].Role != role {
@@ -332,6 +338,17 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 		}
 		v := ownedVM{BootstrapState: "provisioning", Name: name, Role: role, ID: hex.EncodeToString(owner), Created: !exists, Files: reservedFiles(role, port)}
 		if !exists {
+			createArgs := []string{"create", "--tty=false", "--name", name, "--cpus", fmt.Sprint(cpus), "--memory", fmt.Sprint(memory), "--disk", fmt.Sprint(disk), "--containerd", "none", "--set", fmt.Sprintf(".env.%s = %q", limaOwnerEnv, v.ID)}
+			if role == "benchmark" {
+				listener, err := net.Listen("tcp4", "127.0.0.1:0")
+				if err != nil {
+					return ctx, nil, err
+				}
+				// Persist the chosen port in Lima rather than reallocating it on restart.
+				createArgs = append(createArgs, "--set", fmt.Sprintf(".ssh.localPort = %d", listener.Addr().(*net.TCPAddr).Port))
+				listener.Close()
+			}
+			createArgs = append(createArgs, "template:ubuntu")
 			v.BootstrapState = "creating"
 			registry.VMs = append(registry.VMs, v)
 			index = len(registry.VMs) - 1
@@ -340,7 +357,7 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 			}
 			session.newVM, session.vm = true, v
 			fmt.Fprintf(log, "Creating owned Lima VM %s\n", name)
-			_, err = m.run(ctx, []string{"create", "--tty=false", "--name", name, "--cpus", fmt.Sprint(cpus), "--memory", fmt.Sprint(memory), "--disk", fmt.Sprint(disk), "--containerd", "none", "--set", fmt.Sprintf(".env.%s = %q", limaOwnerEnv, v.ID), "template:ubuntu"}, nil)
+			_, err = m.run(ctx, createArgs, nil)
 			if err != nil {
 				return ctx, nil, err
 			}

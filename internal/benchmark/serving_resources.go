@@ -7,7 +7,6 @@ import (
 	"fmt"
 	"io"
 	"math"
-	"net/url"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -70,14 +69,8 @@ func (s *servingSampler) sample(ctx context.Context) (p servingSample) {
 	p = servingSample{Values: map[string]float64{}}
 	defer func() { p.At = time.Now().UTC() }()
 	if s.client.plan.MetricsURL != "" {
-		u, _ := url.Parse(s.client.plan.MetricsURL)
-		base, _ := url.Parse(s.client.plan.Endpoint)
-		token := os.Getenv("MODELGAUGE_INFERENCE_METRICS_TOKEN")
-		if token == "" && u.Scheme == base.Scheme && u.Host == base.Host {
-			token = os.Getenv("MODELGAUGE_INFERENCE_TOKEN")
-		}
 		probe, stop := context.WithTimeout(ctx, 2*time.Second)
-		r, err := s.client.request(probe, "GET", s.client.plan.MetricsURL, token, nil)
+		r, err := s.client.request(probe, "GET", s.client.plan.MetricsURL, nil)
 		if err == nil {
 			if r.StatusCode == 200 {
 				data, e := io.ReadAll(io.LimitReader(r.Body, (1<<20)+1))
@@ -317,8 +310,8 @@ func parseServingMetrics(raw string, values map[string]float64) {
 	}
 }
 
-func summarizeServingResources(samples []servingSample, successful, outputTokens int) ServingResources {
-	r := ServingResources{Scope: "endpoint metric gauges (max across label sets; queue gauges summed); local PID/node observations only when explicitly supplied", Samples: len(samples), Observed: map[string]Distribution{}, Unavailable: []string{}}
+func summarizeServingResources(samples []servingSample, successful, outputTokens int) servingResources {
+	r := servingResources{Scope: "model process and benchmark node; server gauges use maxima across label sets and summed queues", Samples: len(samples), Observed: map[string]distributionStats{}, Unavailable: []string{}}
 	if len(samples) > 1 {
 		r.ObservationSeconds = samples[len(samples)-1].At.Sub(samples[0].At).Seconds()
 	}

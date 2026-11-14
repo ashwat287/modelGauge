@@ -10,8 +10,8 @@ import (
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
-// WriteServingCSV keeps engine-only CSV unchanged and expands serving statistics.
-func WriteServingCSV(out io.Writer, results []protocol.Result) error {
+// writeServingCSV keeps engine-only CSV unchanged and expands serving statistics.
+func writeServingCSV(out io.Writer, results []protocol.Result) error {
 	w := csv.NewWriter(out)
 	header := []string{"run_id", "node_id", "model_id", "status", "case_id", "scenario", "concurrency", "target_prompt_tokens", "max_output_tokens", "elapsed_seconds", "offered", "dispatched", "successful", "errors", "timeouts", "incomplete", "cancelled", "client_capacity_drops", "successful_requests_per_second", "goodput_requests_per_second", "input_tokens_per_second", "output_tokens_per_second", "token_accounted_requests", "quality_evaluated", "quality_passed", "quality_pass_rate", "cache_hit_requests", "known_cached_tokens", "context_truncated", "output_limited"}
 	for _, metric := range []string{"latency_ms", "ttft_ms", "first_answer_ms", "tpot_ms", "stream_chunk_gap_ms", "observed_token_gap_ms", "longest_stream_stall_ms", "dispatch_delay_ms", "scheduled_latency_ms", "client_cancel_ack_ms"} {
@@ -21,6 +21,7 @@ func WriteServingCSV(out io.Writer, results []protocol.Result) error {
 	}
 	header = append(header, "sampled_peak_rss_bytes", "sampled_peak_pss_bytes", "process_lifetime_peak_rss_bytes", "process_cpu_seconds", "node_cpu_package_energy_joules", "resources_json", "warnings_json")
 	header = append(header, "plan_id", "execution_mode", "served_model", "cache_prompt", "cache_accounted_requests", "slo_evaluated", "slo_met", "target_ttft_ms", "target_tpot_ms", "target_latency_ms", "first_request_latency_ms", "observed_models_json", "recovery_probe_json")
+	header = append(header, "process_start_to_ready_ms", "process_shutdown_ms", "server_threads", "context_per_slot", "parallel_slots")
 	if err := w.Write(header); err != nil {
 		return err
 	}
@@ -36,13 +37,13 @@ func WriteServingCSV(out io.Writer, results []protocol.Result) error {
 		if result.Benchmark == nil || result.Benchmark.Kind != "serving" {
 			continue
 		}
-		report, err := DecodeServingReport(result)
+		report, err := decodeServingReport(result)
 		if err != nil {
 			return err
 		}
 		for _, c := range report.Cases {
 			row := []string{result.RunID, result.NodeID, report.ModelID, string(result.Status), c.ID, c.Scenario, integer(c.Concurrency), integer(c.TargetPromptTokens), integer(c.MaxOutputTokens), number(c.ElapsedSeconds), integer(c.Offered), integer(c.Dispatched), integer(c.Successful), integer(c.Errors), integer(c.Timeouts), integer(c.Incomplete), integer(c.Cancelled), integer(c.ClientCapacityDrops), number(c.RequestsPerSecond), optional(c.Goodput), optional(c.InputTokensPerSecond), optional(c.OutputTokensPerSecond), integer(c.TokenAccounted), integer(c.QualityEvaluated), integer(c.QualityPassed), optional(c.QualityPassRate), integer(c.CacheHitRequests), integer(c.CachedTokens), integer(c.ContextTruncated), integer(c.OutputLimited)}
-			for _, d := range []*Distribution{c.LatencyMS, c.TTFTMS, c.FirstAnswerMS, c.TPOTMS, c.ChunkGapMS, c.ITLMS, c.LongestStallMS, c.DispatchDelayMS, c.ScheduledLatencyMS, c.CancelAckMS} {
+			for _, d := range []*distributionStats{c.LatencyMS, c.TTFTMS, c.FirstAnswerMS, c.TPOTMS, c.ChunkGapMS, c.ITLMS, c.LongestStallMS, c.DispatchDelayMS, c.ScheduledLatencyMS, c.CancelAckMS} {
 				if d == nil {
 					row = append(row, "", "", "", "", "", "", "", "", "")
 					continue
@@ -68,6 +69,7 @@ func WriteServingCSV(out io.Writer, results []protocol.Result) error {
 			}
 			targets := report.Targets
 			row = append(row, result.PlanID, string(result.ExecutionMode), c.ServedModel, strconv.FormatBool(c.CachePrompt), integer(c.CacheAccounted), integer(c.SLOEvaluated), integer(c.SLOMet), number(targets.TTFTMS), number(targets.TPOTMS), number(targets.LatencyMS), optional(c.FirstRequestMS), string(models), string(probe))
+			row = append(row, optional(report.StartupMS), optional(report.ShutdownMS), report.Settings["threads"], report.Settings["context_capacity"], report.Settings["parallel_slots"])
 			for i, value := range row {
 				trim := strings.TrimLeft(value, " \t\r\n")
 				if len(trim) > 0 && strings.ContainsRune("=+-@", rune(trim[0])) {

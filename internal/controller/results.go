@@ -138,7 +138,6 @@ FROM benchmark_runs run
 JOIN benchmark_plans plan ON plan.plan_id = run.plan_id
 LEFT JOIN memory_measurements memory ON memory.run_id = run.run_id
 WHERE run.node_id = $1 AND plan.specification #>> '{model,id}' = $2 AND run.execution_mode = $3 AND run.status = 'completed'
-  AND NOT (plan.specification ? 'serving' OR plan.specification ? 'benchmark')
   AND EXISTS (SELECT 1 FROM benchmark_cases c WHERE c.run_id = run.run_id AND c.prompt_tokens = $4 AND c.generation_tokens = 0)
 ORDER BY run.completed_at DESC LIMIT 1`, nodeID, modelID, mode, contextTokens).Scan(&run.RunID, &run.PlanID, &run.NodeID, &run.ModelID, &run.ExecutionMode, &run.Status, &run.CompletedAt, &run.PeakRSSBytes, &run.SafeReservationBytes)
 	if err != nil {

@@ -5,14 +5,18 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 
+	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 // A built-in benchmark owns its workload, execution, and presentation. Adding one
 // requires only its implementation/tests and an entry here, not platform branches.
 type implementation struct {
+	profile        string
+	plan           func(context.Context, planOptions, json.RawMessage) ([]protocol.Plan, error)
 	validate       func(protocol.Plan) error
 	run            func(context.Context, protocol.Plan, Options) (protocol.Result, string, error)
 	validateReport func(json.RawMessage) error
@@ -22,11 +26,47 @@ type implementation struct {
 }
 
 var implementations = map[string]implementation{
-	"llama.cpp": {validate: validateEnginePlan, run: runEnginePlan},
+	"llama.cpp": {profile: standardCPU, plan: engineProfile, validate: validateEnginePlan, run: runEnginePlan},
 	"serving":   servingImplementation(),
 }
 
-func Kind(plan protocol.Plan) string {
+func init() { implementations["suite"] = suiteImplementation() }
+
+// Profiles lists the planners registered for declarations.
+func Profiles() []string {
+	names := []string{}
+	for _, module := range implementations {
+		if module.plan != nil {
+			names = append(names, module.profile)
+		}
+	}
+	sort.Strings(names)
+	return names
+}
+
+func newPlans(ctx context.Context, name string, options planOptions, config json.RawMessage) ([]protocol.Plan, error) {
+	for _, module := range implementations {
+		if module.profile != name || module.plan == nil {
+			continue
+		}
+		plans, err := module.plan(ctx, options, config)
+		if err != nil {
+			return nil, err
+		}
+		if len(plans) == 0 {
+			return nil, fmt.Errorf("profile %q produced no plans", name)
+		}
+		for _, plan := range plans {
+			if err := ValidatePlan(plan); err != nil {
+				return nil, err
+			}
+		}
+		return plans, nil
+	}
+	return nil, fmt.Errorf("unknown benchmark profile %q", name)
+}
+
+func planKind(plan protocol.Plan) string {
 	if plan.Benchmark != nil {
 		return plan.Benchmark.Kind
 	}
@@ -37,9 +77,9 @@ func ValidatePlan(plan protocol.Plan) error {
 	if err := plan.Validate(); err != nil {
 		return err
 	}
-	module, ok := implementations[Kind(plan)]
+	module, ok := implementations[planKind(plan)]
 	if !ok {
-		return fmt.Errorf("unsupported benchmark kind %q", Kind(plan))
+		return fmt.Errorf("unsupported benchmark kind %q", planKind(plan))
 	}
 	if module.validate != nil {
 		return module.validate(plan)
@@ -47,12 +87,20 @@ func ValidatePlan(plan protocol.Plan) error {
 	return nil
 }
 
-// RunWithOptions dispatches jobs without exposing benchmark details to the agent.
-func RunWithOptions(ctx context.Context, plan protocol.Plan, options Options) (protocol.Result, string, error) {
+// Run dispatches jobs without exposing benchmark details to the agent.
+func Run(ctx context.Context, plan protocol.Plan, options Options) (protocol.Result, string, error) {
 	if err := ValidatePlan(plan); err != nil {
 		return protocol.Result{}, "", err
 	}
-	return implementations[Kind(plan)].run(ctx, plan, options)
+	unlock, err := platform.Lock("execution")
+	if err != nil {
+		return protocol.Result{}, "", err
+	}
+	defer unlock()
+	if err := ensureNodeIdle(ctx); err != nil {
+		return protocol.Result{}, "", err
+	}
+	return implementations[planKind(plan)].run(ctx, plan, options)
 }
 
 func ValidateResult(result protocol.Result) error {
@@ -109,7 +157,7 @@ func WriteMetrics(out *strings.Builder, node, mode, model string, report *protoc
 	return module.metrics(out, node, mode, model, report.Data)
 }
 
-func SetConfig(plan *protocol.Plan, kind string, config any) error {
+func setConfig(plan *protocol.Plan, kind string, config any) error {
 	data, err := json.Marshal(config)
 	if err != nil {
 		return err

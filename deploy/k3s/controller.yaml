@@ -1,3 +1,15 @@
+apiVersion: v1
+kind: PersistentVolumeClaim
+metadata:
+  name: modelgauge-executor-data
+  namespace: benchmark-system
+spec:
+  accessModes: [ReadWriteOnce]
+  storageClassName: local-path
+  resources:
+    requests:
+      storage: 1Gi
+---
 apiVersion: apps/v1
 kind: Deployment
 metadata:
@@ -8,6 +20,8 @@ metadata:
     app.kubernetes.io/component: control-plane
 spec:
   replicas: 1
+  strategy:
+    type: Recreate
   selector:
     matchLabels:
       app.kubernetes.io/name: modelgauge-controller
@@ -16,12 +30,23 @@ spec:
       labels:
         app.kubernetes.io/name: modelgauge-controller
     spec:
+      securityContext:
+        fsGroup: 65532
+      volumes:
+        - name: executor-data
+          persistentVolumeClaim:
+            claimName: modelgauge-executor-data
       containers:
         - name: controller
           image: ghcr.io/nerdylucifer/modelgauge:dev
           imagePullPolicy: IfNotPresent
           args: ["server", "--listen", ":8080"]
+          volumeMounts:
+            - name: executor-data
+              mountPath: /var/lib/modelgauge
           env:
+            - name: MODELGAUGE_EXECUTOR_STATE_DIR
+              value: /var/lib/modelgauge
             - name: DATABASE_HOST
               valueFrom:
                 secretKeyRef:

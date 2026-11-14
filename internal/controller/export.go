@@ -28,10 +28,6 @@ type NodeExport struct {
 	Artifacts       []protocol.EvidenceRef `json:"artifacts"`
 }
 
-func (s *Store) ExportNode(ctx context.Context, nodeID string) (NodeExport, error) {
-	return s.ExportNodeRun(ctx, nodeID, "")
-}
-
 func (s *Store) ExportNodeRun(ctx context.Context, nodeID, runID string) (NodeExport, error) {
 	tx, err := s.pool.BeginTx(ctx, pgx.TxOptions{IsoLevel: pgx.RepeatableRead, AccessMode: pgx.ReadOnly})
 	if err != nil {

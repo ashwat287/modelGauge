@@ -2,12 +2,18 @@ package agent
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/json"
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/http/httputil"
+	"net/url"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strconv"
+	"strings"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -17,19 +23,25 @@ import (
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
-func TestServingPlanUsesExistingEndpointWithoutLocalRuntime(t *testing.T) {
+func TestManagedModelRunsOnAgentAndUploadsServingReport(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("managed model execution requires Linux")
+	}
 	t.Setenv("HOME", t.TempDir())
-	t.Setenv("PATH", "")
 	t.Setenv("MODELGAUGE_INFERENCE_TOKEN", "inference-secret")
 	inference := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("Authorization") != "Bearer inference-secret" {
-			t.Error("inference authentication missing")
+		if r.Header.Get("Authorization") != "" {
+			t.Error("unrelated credentials leaked to the model process")
 		}
 		if r.Header.Get("X-ModelGauge-Token") != "" {
 			t.Error("agent token leaked to inference endpoint")
 		}
 		if r.URL.Path == "/v1/models" {
 			w.WriteHeader(200)
+			return
+		}
+		if r.URL.Path == "/metrics" {
+			fmt.Fprint(w, "llamacpp:requests_processing 1\n")
 			return
 		}
 		if r.URL.Path != "/v1/chat/completions" {
@@ -60,7 +72,20 @@ func TestServingPlanUsesExistingEndpointWithoutLocalRuntime(t *testing.T) {
 		w.WriteHeader(204)
 	}))
 	defer controller.Close()
-	plan := protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: "test", ExecutionMode: protocol.ExecutionModeLima, Runtime: protocol.Runtime{Kind: "http"}, Model: protocol.Model{ID: "test-model"}, Benchmark: &protocol.BenchmarkSpec{Kind: "serving", Config: json.RawMessage(fmt.Sprintf(`{"endpoint":%q,"api":"openai","request_timeout_seconds":1,"readiness_timeout_seconds":1,"sample_interval_seconds":1,"cases":[{"id":"load","concurrency":1,"requests":1,"max_output_tokens":8}]}`, inference.URL))}}
+	t.Setenv("MG_TEST_PROXY", inference.URL)
+	binary, err := os.Executable()
+	if err != nil {
+		t.Fatal(err)
+	}
+	script := filepath.Join(t.TempDir(), "llama-server")
+	if err := os.WriteFile(script, []byte("#!/bin/sh\nexec '"+strings.ReplaceAll(binary, "'", "'\"'\"'")+"' -test.run=TestAgentModelProcess -- \"$@\"\n"), 0700); err != nil {
+		t.Fatal(err)
+	}
+	model := filepath.Join(t.TempDir(), "model.gguf")
+	if err := os.WriteFile(model, []byte("fixture model"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	plan := protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: "test", ExecutionMode: protocol.ExecutionModeLima, Runtime: protocol.Runtime{Kind: "llama-server", Binary: script}, Model: protocol.Model{ID: "test-model", Path: model, SHA256: fmt.Sprintf("%x", sha256.Sum256([]byte("fixture model")))}, Benchmark: &protocol.BenchmarkSpec{Kind: "serving", Config: json.RawMessage(`{"server":{"threads":1,"context_tokens":1024,"parallel":1},"api":"openai","served_model":"test-model","request_timeout_seconds":5,"readiness_timeout_seconds":5,"sample_interval_seconds":0.1,"cases":[{"id":"load","concurrency":1,"requests":1,"max_output_tokens":8}]}`)}}
 	c := Config{NodeID: "test", ExecutionMode: protocol.ExecutionModeLima, ResultsDir: t.TempDir()}
 	p := pendingJobForPlan(lease{PlanID: "plan", LeaseToken: "token", ExpiresAt: time.Now().Add(time.Minute), Specification: plan})
 	if err := savePending(c, &p); err != nil {
@@ -148,4 +173,26 @@ func TestPermanentlyRejectedResultIsArchivedAndReleasesQueue(t *testing.T) {
 	if err != nil || len(archived) != 5 {
 		t.Fatal("evidence not preserved", archived, err)
 	}
+}
+
+func TestAgentModelProcess(t *testing.T) {
+	upstream := os.Getenv("MG_TEST_PROXY")
+	if upstream == "" {
+		return
+	}
+	target, err := url.Parse(upstream)
+	if err != nil {
+		os.Exit(2)
+	}
+	port := ""
+	for i, arg := range os.Args {
+		if arg == "--port" && i+1 < len(os.Args) {
+			port = os.Args[i+1]
+		}
+	}
+	if _, err := strconv.Atoi(port); err != nil {
+		os.Exit(2)
+	}
+	_ = http.ListenAndServe("127.0.0.1:"+port, httputil.NewSingleHostReverseProxy(target))
+	os.Exit(1)
 }

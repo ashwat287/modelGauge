@@ -32,15 +32,16 @@ var ownerPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var forwardPattern = regexp.MustCompile(`^\.config/systemd/user/modelgauge-forward-[0-9]{4,5}\.service$`)
 
 type Request struct {
-	CheckIdle  bool     `json:"check_idle,omitempty"`
-	ID         string   `json:"id"`
-	Role       string   `json:"role"`
-	Operation  string   `json:"operation"`
-	Files      []string `json:"files"`
-	MachineID  string   `json:"machine_id"`
-	Cleaned    bool     `json:"cleaned"`
-	Prepared   bool     `json:"prepared"`
-	Unprepared bool     `json:"unprepared"`
+	AllowQueued bool     `json:"allow_queued,omitempty"`
+	CheckIdle   bool     `json:"check_idle,omitempty"`
+	ID          string   `json:"id"`
+	Role        string   `json:"role"`
+	Operation   string   `json:"operation"`
+	Files       []string `json:"files"`
+	MachineID   string   `json:"machine_id"`
+	Cleaned     bool     `json:"cleaned"`
+	Prepared    bool     `json:"prepared"`
+	Unprepared  bool     `json:"unprepared"`
 }
 type State struct {
 	PendingHelperSHA256 string                 `json:"pending_helper_sha256,omitempty"`
@@ -340,7 +341,7 @@ func (r Runtime) active(ctx context.Context) error {
 	if r.Run == nil {
 		return fmt.Errorf("guest command runner unavailable")
 	}
-	_, err := r.Run(ctx, []string{"pgrep", "-x", "llama-bench"}, nil)
+	_, err := r.Run(ctx, []string{"pgrep", "-x", "llama-bench|llama-server"}, nil)
 	if err == nil {
 		return fmt.Errorf("a benchmark is active; refusing cleanup")
 	}
@@ -350,7 +351,7 @@ func (r Runtime) active(ctx context.Context) error {
 	}
 	return nil
 }
-func (r Runtime) checkJobs(ctx context.Context) error {
+func (r Runtime) checkJobs(ctx context.Context, includeQueued bool) error {
 	path, err := r.safePath(".kube/modelgauge-config")
 	if err != nil {
 		return err
@@ -369,7 +370,11 @@ func (r Runtime) checkJobs(ctx context.Context) error {
 	if strings.TrimSpace(string(probe)) == "" {
 		return nil
 	}
-	sql := "SELECT count(*) FROM benchmark_plans WHERE status IN ('queued','leased','running'); SELECT count(*) FROM model_install_jobs WHERE status IN ('queued','leased','running');"
+	states := "'leased','running'"
+	if includeQueued {
+		states += ",'queued'"
+	}
+	sql := "SELECT count(*) FROM benchmark_plans WHERE status IN (" + states + "); SELECT count(*) FROM model_install_jobs WHERE status IN (" + states + ");"
 	counts, err := r.Run(ctx, []string{"kubectl", "--request-timeout=10s", "-n", "benchmark-data", "exec", "benchmark-postgres-0", "--", "psql", "-U", "benchmark_app", "-d", "benchmark", "-Atc", sql}, env)
 	if err != nil {
 		return fmt.Errorf("cannot verify job queues: %w", err)
@@ -380,8 +385,14 @@ func (r Runtime) checkJobs(ctx context.Context) error {
 	}
 	for _, value := range fields {
 		count, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || count != 0 {
-			return fmt.Errorf("active or queued jobs exist, or their state could not be verified")
+		if err != nil || count < 0 {
+			return fmt.Errorf("invalid job state response")
+		}
+		if count > 0 {
+			if includeQueued {
+				return fmt.Errorf("active or queued jobs exist; finish or cancel them before cleanup or an upgrade without paused executors")
+			}
+			return fmt.Errorf("leased or running jobs exist; finish or cancel them before upgrading (queued jobs are preserved)")
 		}
 	}
 	return nil
@@ -457,7 +468,7 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 				return nil, err
 			}
 			if request.CheckIdle && request.Role == "control" {
-				if err = r.checkJobs(ctx); err != nil {
+				if err = r.checkJobs(ctx, !request.AllowQueued); err != nil {
 					return nil, err
 				}
 			} else if request.CheckIdle {
@@ -586,7 +597,7 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 			return nil, fmt.Errorf("pending experiment/download/upload exists")
 		}
 		if request.Role == "control" {
-			if err = r.checkJobs(ctx); err != nil {
+			if err = r.checkJobs(ctx, true); err != nil {
 				return nil, err
 			}
 		}
@@ -619,6 +630,11 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 			}
 		}
 		if request.Operation == "clean" {
+			if request.Role == "benchmark" {
+				if err = r.RemoveControllerKey(); err != nil {
+					return nil, err
+				}
+			}
 			for name, expected := range state.Files {
 				p, err := r.safePath(name)
 				if err != nil {

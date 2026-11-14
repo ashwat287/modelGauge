@@ -88,9 +88,6 @@ func copyVerified(destination, relative string, source io.Reader, size int64, ex
 	}
 	return nil
 }
-func CopyLocal(source, destination string, refs []protocol.EvidenceRef) error {
-	return CopyLocalContext(context.Background(), source, destination, refs)
-}
 func CopyLocalContext(ctx context.Context, source, destination string, refs []protocol.EvidenceRef) error {
 	var total int64
 	for _, ref := range refs {
@@ -123,9 +120,6 @@ func CopyLocalContext(ctx context.Context, source, destination string, refs []pr
 		}
 	}
 	return nil
-}
-func ReceiveArchive(source io.Reader, destination string, refs []protocol.EvidenceRef) error {
-	return ReceiveArchiveContext(context.Background(), source, destination, refs)
 }
 func ReceiveArchiveContext(ctx context.Context, source io.Reader, destination string, refs []protocol.EvidenceRef) error {
 	source = contextReader{ctx, source}

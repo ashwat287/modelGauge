@@ -68,6 +68,9 @@ func (f *fakeLima) run(ctx context.Context, args []string, input []byte) ([]byte
 			}
 			if arg == "--set" {
 				prefix := ".env." + limaOwnerEnv + " = "
+				if strings.HasPrefix(args[i+1], ".ssh.localPort = ") {
+					continue
+				}
 				if !strings.HasPrefix(args[i+1], prefix) || json.Unmarshal([]byte(strings.TrimPrefix(args[i+1], prefix)), &owner) != nil {
 					return nil, fmt.Errorf("invalid Lima creation owner")
 				}

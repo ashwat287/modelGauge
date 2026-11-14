@@ -88,8 +88,29 @@ func Bootstrap(ctx context.Context, o Options) (result Config, resultErr error) 
 	if o.Log == nil {
 		o.Log = io.Discard
 	}
+	var paused []string
+	var previous Config
+	queuedPaused := false
+	if saved, err := Load(); err == nil && saved.VM == o.Name {
+		previous = saved
+		paused, queuedPaused, err = pauseExecutors(ctx, saved)
+		if err != nil {
+			return Config{}, fmt.Errorf("pause executors before control upgrade: %w", err)
+		}
+		defer func() {
+			recovery, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+			defer cancel()
+			target := previous
+			if result.ControllerURL != "" {
+				target = result
+			}
+			for _, node := range paused {
+				resultErr = errors.Join(resultErr, connectionAction(recovery, target, node, "resume"))
+			}
+		}()
+	}
 
-	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "control", o.CPUs, o.MemoryGiB, o.DiskGiB, o.Port, o.Log, NodeOptions{Source: o.Source, AgentBinary: o.HelperBinary})
+	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "control", o.CPUs, o.MemoryGiB, o.DiskGiB, o.Port, o.Log, NodeOptions{Source: o.Source, AgentBinary: o.HelperBinary, queuedJobsPaused: queuedPaused})
 	if err != nil {
 		return Config{}, err
 	}

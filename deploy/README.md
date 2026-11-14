@@ -1,7 +1,7 @@
 # 🏗️ Deployment assets
 
-This directory contains embedded Kubernetes manifests, deployment scripts, SQL,
-and Grafana dashboards. Deployment documentation lives under `docs/`:
+This directory contains embedded Kubernetes manifests, deployment scripts, and Grafana dashboards. Database migrations live in
+`internal/controller/migrations/`. Deployment documentation lives under `docs/`:
 
 - [Control-plane bootstrap](../docs/deployment/BOOTSTRAP.md)
 - [Benchmark-node bootstrap](../docs/deployment/NODE-BOOTSTRAP.md)

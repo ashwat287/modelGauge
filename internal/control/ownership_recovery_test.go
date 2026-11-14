@@ -324,3 +324,33 @@ func TestFailedUpgradeKeepsPreviouslyVerifiedHelper(t *testing.T) {
 		t.Fatal("existing resource altered on refusal")
 	}
 }
+
+func TestFailedUpgradeGuardNeverDeletesPreviouslyCreatedControlVM(t *testing.T) {
+	m, f := fixture(t)
+	g := prepareTestVM(t, m, f, "control", "control")
+	registry, err := m.load()
+	if err != nil {
+		t.Fatal(err)
+	}
+	before := registry.VMs[0]
+	if err = os.WriteFile(filepath.Join(g.home, "simulate-active-jobs"), []byte("active"), 0600); err != nil {
+		t.Fatal(err)
+	}
+	f.calls = nil
+	_, _, err = m.provision(context.Background(), "control", "control", 4, 6, 50, 18080, io.Discard)
+	if err == nil {
+		t.Fatal("active jobs did not prevent upgrade")
+	}
+	if f.guests["control"] != g {
+		t.Fatal("existing control VM removed")
+	}
+	registry, err = m.load()
+	if err != nil || len(registry.VMs) != 1 || registry.VMs[0].ID != before.ID {
+		t.Fatal("existing ownership lost", registry, err)
+	}
+	for _, args := range f.calls {
+		if args[0] == "stop" || args[0] == "delete" || args[0] == "create" {
+			t.Fatal("guard failure changed VM lifecycle", args)
+		}
+	}
+}

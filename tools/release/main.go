@@ -29,7 +29,6 @@ func main() {
 		os.Exit(1)
 	}
 }
-func run() error { return runContext(context.Background()) }
 func runContext(ctx context.Context) error {
 	version := flag.String("version", "", "release tag, e.g. v0.1.0")
 	repository := flag.String("repository", buildinfo.Repository, "GitHub owner/repository")

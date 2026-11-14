@@ -6,14 +6,16 @@ import (
 	"fmt"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"math"
+	"net"
 	"net/url"
 	"regexp"
 	"strings"
 	"time"
 )
 
-// ServingPlan observes an existing endpoint; it never starts or reconfigures it.
-type ServingPlan struct {
+// servingPlan runs against a temporary model process on the measured node.
+type servingPlan struct {
+	Server           *servingServer    `json:"server,omitempty"`
 	Endpoint         string            `json:"endpoint"`
 	API              string            `json:"api"`
 	ServedModel      string            `json:"served_model,omitempty"`
@@ -27,17 +29,24 @@ type ServingPlan struct {
 	Seed             int               `json:"seed"`
 	Temperature      float64           `json:"temperature"`
 	RuntimeSettings  map[string]string `json:"operator_runtime_settings,omitempty"`
-	Targets          ServingTargets    `json:"targets"`
-	Cases            []ServingCase     `json:"cases"`
+	Targets          servingTargets    `json:"targets"`
+	Cases            []servingCase     `json:"cases"`
 }
 
-type ServingTargets struct {
+type servingServer struct {
+	Threads       int `json:"threads"`
+	ContextTokens int `json:"context_tokens"` // Per parallel slot, not total server capacity.
+	Parallel      int `json:"parallel"`
+	GPULayers     int `json:"gpu_layers"`
+}
+
+type servingTargets struct {
 	TTFTMS    float64 `json:"ttft_ms,omitempty"`
 	TPOTMS    float64 `json:"tpot_ms,omitempty"`
 	LatencyMS float64 `json:"latency_ms,omitempty"`
 }
 
-type ServingCase struct {
+type servingCase struct {
 	ID                   string          `json:"id"`
 	Scenario             string          `json:"scenario"`
 	Concurrency          int             `json:"concurrency"`
@@ -54,39 +63,39 @@ type ServingCase struct {
 	RecoveryProbe        bool            `json:"recovery_probe,omitempty"`
 	IdleBeforeSeconds    float64         `json:"idle_before_seconds,omitempty"`
 	Model                string          `json:"served_model,omitempty"`
-	Prompts              []ServingPrompt `json:"prompts,omitempty"`
+	Prompts              []servingPrompt `json:"prompts,omitempty"`
 }
 
-type ServingMessage struct {
+type servingMessage struct {
 	Role    string `json:"role"`
 	Content string `json:"content"`
 }
 
-type ServingPrompt struct {
+type servingPrompt struct {
 	ID       string           `json:"id"`
 	Text     string           `json:"text,omitempty"`
-	Messages []ServingMessage `json:"messages,omitempty"`
+	Messages []servingMessage `json:"messages,omitempty"`
 	Tools    json.RawMessage  `json:"tools,omitempty"`
-	Expect   *ServingChecks   `json:"expect,omitempty"`
+	Expect   *servingChecks   `json:"expect,omitempty"`
 }
 
-type ServingChecks struct {
+type servingChecks struct {
 	Exact       *string           `json:"exact,omitempty"`
 	Contains    []string          `json:"contains,omitempty"`
 	NotContains []string          `json:"not_contains,omitempty"`
 	Regex       string            `json:"regex,omitempty"`
 	JSON        bool              `json:"json,omitempty"`
 	JSONSubset  json.RawMessage   `json:"json_subset,omitempty"`
-	ToolCalls   []ServingToolCall `json:"tool_calls,omitempty"`
+	ToolCalls   []servingToolCall `json:"tool_calls,omitempty"`
 }
 
-type ServingToolCall struct {
+type servingToolCall struct {
 	RawArguments string          `json:"raw_arguments,omitempty"`
 	Name         string          `json:"name"`
 	Arguments    json.RawMessage `json:"arguments"`
 }
 
-func ServingURL(value string) (*url.URL, error) {
+func servingURL(value string) (*url.URL, error) {
 	if len(value) > 4096 {
 		return nil, errors.New("endpoint URL exceeds 4096 bytes")
 	}
@@ -97,16 +106,25 @@ func ServingURL(value string) (*url.URL, error) {
 	return u, nil
 }
 
-func (s ServingPlan) Validate() error {
+func (s servingPlan) Validate() error {
 	var problems []error
 	if len(s.ServedModel) > 512 {
 		problems = append(problems, errors.New("served model alias exceeds 512 bytes"))
 	}
-	if _, err := ServingURL(s.Endpoint); err != nil {
+	if s.Server != nil {
+		if s.Endpoint != "" || s.LocalPID != 0 || s.MetricsURL != "" || s.ReadinessPath != "" || len(s.RuntimeSettings) != 0 {
+			problems = append(problems, errors.New("managed serving owns its endpoint, PID, metrics and runtime settings"))
+		}
+		if s.Server.Threads < 1 || s.Server.ContextTokens < 256 || s.Server.ContextTokens > 262144 || s.Server.Parallel < 1 || s.Server.Parallel > 256 || s.Server.GPULayers < 0 {
+			problems = append(problems, errors.New("invalid managed server threads, context, parallel slots or GPU layers"))
+		}
+	} else if u, err := servingURL(s.Endpoint); err != nil {
 		problems = append(problems, err)
+	} else if ip := net.ParseIP(u.Hostname()); u.Hostname() != "localhost" && (ip == nil || !ip.IsLoopback()) {
+		problems = append(problems, errors.New("serving measurements must target the benchmark node's loopback interface"))
 	}
 	if s.MetricsURL != "" {
-		if _, err := ServingURL(s.MetricsURL); err != nil {
+		if _, err := servingURL(s.MetricsURL); err != nil {
 			problems = append(problems, fmt.Errorf("metrics: %w", err))
 		}
 	}
@@ -141,6 +159,9 @@ func (s ServingPlan) Validate() error {
 	}
 	ids := map[string]bool{}
 	for _, c := range s.Cases {
+		if s.Server != nil && (c.Model != "" || c.Concurrency > s.Server.Parallel || c.PromptTokens+c.OutputTokens+64 > s.Server.ContextTokens) {
+			problems = append(problems, fmt.Errorf("case %s exceeds managed model/slot/context configuration", c.ID))
+		}
 		if len(c.Model) > 512 {
 			problems = append(problems, errors.New("case model alias exceeds 512 bytes"))
 		}
@@ -216,7 +237,7 @@ func (s ServingPlan) Validate() error {
 
 func finite(v float64) bool { return !math.IsNaN(v) && !math.IsInf(v, 0) }
 
-type Distribution struct {
+type distributionStats struct {
 	Count  int     `json:"count"`
 	Mean   float64 `json:"mean"`
 	Stddev float64 `json:"stddev"`
@@ -228,9 +249,11 @@ type Distribution struct {
 	P99    float64 `json:"p99"`
 }
 
-type ServingReport struct {
+type servingReport struct {
+	StartupMS       *float64            `json:"process_start_to_ready_ms,omitempty"`
+	ShutdownMS      *float64            `json:"process_shutdown_ms,omitempty"`
 	ModelID         string              `json:"model_id"`
-	Targets         ServingTargets      `json:"targets"`
+	Targets         servingTargets      `json:"targets"`
 	SchemaVersion   string              `json:"schema_version"`
 	Endpoint        string              `json:"endpoint"`
 	API             string              `json:"api"`
@@ -239,72 +262,72 @@ type ServingReport struct {
 	CompletedAt     time.Time           `json:"completed_at"`
 	ReadinessWaitMS float64             `json:"readiness_wait_ms"`
 	Settings        map[string]string   `json:"operator_runtime_settings,omitempty"`
-	Cases           []ServingCaseResult `json:"cases"`
+	Cases           []servingCaseResult `json:"cases"`
 	Warnings        []string            `json:"warnings"`
 	Unavailable     []string            `json:"unavailable"`
 }
 
-type ServingCaseResult struct {
-	ObservedModels        []string         `json:"observed_models,omitempty"`
-	CacheAccounted        int              `json:"cache_accounted_requests"`
-	ID                    string           `json:"id"`
-	Scenario              string           `json:"scenario"`
-	Concurrency           int              `json:"concurrency"`
-	TargetPromptTokens    int              `json:"target_prompt_tokens"`
-	MaxOutputTokens       int              `json:"max_output_tokens"`
-	ServedModel           string           `json:"served_model,omitempty"`
-	CachePrompt           bool             `json:"cache_prompt"`
-	StartedAt             time.Time        `json:"started_at"`
-	ElapsedSeconds        float64          `json:"elapsed_seconds"`
-	DispatchSeconds       float64          `json:"dispatch_seconds"`
-	Offered               int              `json:"offered"`
-	Dispatched            int              `json:"dispatched"`
-	Successful            int              `json:"successful"`
-	Errors                int              `json:"errors"`
-	Timeouts              int              `json:"timeouts"`
-	Incomplete            int              `json:"incomplete"`
-	Cancelled             int              `json:"cancelled"`
-	ClientCapacityDrops   int              `json:"client_capacity_drops"`
-	OutputLimited         int              `json:"output_limited"`
-	ContextTruncated      int              `json:"context_truncated"`
-	SLOEvaluated          int              `json:"slo_evaluated"`
-	SLOMet                int              `json:"slo_met"`
-	Goodput               *float64         `json:"goodput_requests_per_second"`
-	RequestsPerSecond     float64          `json:"successful_requests_per_second"`
-	InputTokens           int              `json:"known_input_tokens"`
-	OutputTokens          int              `json:"known_output_tokens"`
-	TokenAccounted        int              `json:"token_accounted_requests"`
-	InputTokensPerSecond  *float64         `json:"input_tokens_per_second"`
-	OutputTokensPerSecond *float64         `json:"output_tokens_per_second"`
-	CachedTokens          int              `json:"known_cached_tokens"`
-	CacheHitRequests      int              `json:"cache_hit_requests"`
-	QualityEvaluated      int              `json:"quality_evaluated"`
-	QualityPassed         int              `json:"quality_passed"`
-	QualityPassRate       *float64         `json:"quality_pass_rate"`
-	LatencyMS             *Distribution    `json:"latency_ms"`
-	TTFTMS                *Distribution    `json:"ttft_ms"`
-	FirstAnswerMS         *Distribution    `json:"first_answer_ms"`
-	TPOTMS                *Distribution    `json:"tpot_ms"`
-	ChunkGapMS            *Distribution    `json:"stream_chunk_gap_ms"`
-	ITLMS                 *Distribution    `json:"observed_token_gap_ms"`
-	LongestStallMS        *Distribution    `json:"longest_stream_stall_ms"`
-	DispatchDelayMS       *Distribution    `json:"dispatch_delay_ms"`
-	ScheduledLatencyMS    *Distribution    `json:"scheduled_latency_ms"`
-	CancelAckMS           *Distribution    `json:"client_cancel_ack_ms"`
-	FirstRequestMS        *float64         `json:"first_request_latency_ms"`
-	RecoveryProbe         *ServingProbe    `json:"recovery_probe,omitempty"`
-	Resources             ServingResources `json:"resources"`
-	Windows               []ServingWindow  `json:"windows"`
-	Warnings              []string         `json:"warnings"`
+type servingCaseResult struct {
+	ObservedModels        []string           `json:"observed_models,omitempty"`
+	CacheAccounted        int                `json:"cache_accounted_requests"`
+	ID                    string             `json:"id"`
+	Scenario              string             `json:"scenario"`
+	Concurrency           int                `json:"concurrency"`
+	TargetPromptTokens    int                `json:"target_prompt_tokens"`
+	MaxOutputTokens       int                `json:"max_output_tokens"`
+	ServedModel           string             `json:"served_model,omitempty"`
+	CachePrompt           bool               `json:"cache_prompt"`
+	StartedAt             time.Time          `json:"started_at"`
+	ElapsedSeconds        float64            `json:"elapsed_seconds"`
+	DispatchSeconds       float64            `json:"dispatch_seconds"`
+	Offered               int                `json:"offered"`
+	Dispatched            int                `json:"dispatched"`
+	Successful            int                `json:"successful"`
+	Errors                int                `json:"errors"`
+	Timeouts              int                `json:"timeouts"`
+	Incomplete            int                `json:"incomplete"`
+	Cancelled             int                `json:"cancelled"`
+	ClientCapacityDrops   int                `json:"client_capacity_drops"`
+	OutputLimited         int                `json:"output_limited"`
+	ContextTruncated      int                `json:"context_truncated"`
+	SLOEvaluated          int                `json:"slo_evaluated"`
+	SLOMet                int                `json:"slo_met"`
+	Goodput               *float64           `json:"goodput_requests_per_second"`
+	RequestsPerSecond     float64            `json:"successful_requests_per_second"`
+	InputTokens           int                `json:"known_input_tokens"`
+	OutputTokens          int                `json:"known_output_tokens"`
+	TokenAccounted        int                `json:"token_accounted_requests"`
+	InputTokensPerSecond  *float64           `json:"input_tokens_per_second"`
+	OutputTokensPerSecond *float64           `json:"output_tokens_per_second"`
+	CachedTokens          int                `json:"known_cached_tokens"`
+	CacheHitRequests      int                `json:"cache_hit_requests"`
+	QualityEvaluated      int                `json:"quality_evaluated"`
+	QualityPassed         int                `json:"quality_passed"`
+	QualityPassRate       *float64           `json:"quality_pass_rate"`
+	LatencyMS             *distributionStats `json:"latency_ms"`
+	TTFTMS                *distributionStats `json:"ttft_ms"`
+	FirstAnswerMS         *distributionStats `json:"first_answer_ms"`
+	TPOTMS                *distributionStats `json:"tpot_ms"`
+	ChunkGapMS            *distributionStats `json:"stream_chunk_gap_ms"`
+	ITLMS                 *distributionStats `json:"observed_token_gap_ms"`
+	LongestStallMS        *distributionStats `json:"longest_stream_stall_ms"`
+	DispatchDelayMS       *distributionStats `json:"dispatch_delay_ms"`
+	ScheduledLatencyMS    *distributionStats `json:"scheduled_latency_ms"`
+	CancelAckMS           *distributionStats `json:"client_cancel_ack_ms"`
+	FirstRequestMS        *float64           `json:"first_request_latency_ms"`
+	RecoveryProbe         *servingProbe      `json:"recovery_probe,omitempty"`
+	Resources             servingResources   `json:"resources"`
+	Windows               []servingWindow    `json:"windows"`
+	Warnings              []string           `json:"warnings"`
 }
 
-type ServingProbe struct {
+type servingProbe struct {
 	Successful bool    `json:"successful"`
 	LatencyMS  float64 `json:"latency_ms"`
 	Error      string  `json:"error,omitempty"`
 }
 
-type ServingWindow struct {
+type servingWindow struct {
 	StartSeconds float64  `json:"start_seconds"`
 	EndSeconds   float64  `json:"end_seconds"`
 	Successful   int      `json:"successful"`
@@ -312,37 +335,44 @@ type ServingWindow struct {
 	OutputRate   *float64 `json:"output_tokens_per_second"`
 }
 
-type ServingResources struct {
-	ObservationSeconds      float64                 `json:"observation_seconds"`
-	AverageCPUPercent       *float64                `json:"process_average_cpu_percent"`
-	GPUEnergyJoules         *float64                `json:"node_gpu_energy_joules"`
-	GPUJoulesPerOutputToken *float64                `json:"node_gpu_joules_per_output_token"`
-	Scope                   string                  `json:"scope"`
-	Samples                 int                     `json:"samples"`
-	SampledPeakRSSBytes     *float64                `json:"sampled_peak_rss_bytes"`
-	SampledPeakPSSBytes     *float64                `json:"sampled_peak_pss_bytes"`
-	LifetimePeakRSSBytes    *float64                `json:"process_lifetime_peak_rss_bytes"`
-	InitialRSSBytes         *float64                `json:"initial_rss_bytes"`
-	FinalRSSBytes           *float64                `json:"final_rss_bytes"`
-	CPUSeconds              *float64                `json:"process_cpu_seconds"`
-	CPUSecondsPerRequest    *float64                `json:"process_cpu_seconds_per_successful_request"`
-	ReadBytes               *float64                `json:"process_read_bytes"`
-	WriteBytes              *float64                `json:"process_write_bytes"`
-	MajorFaults             *float64                `json:"process_major_faults"`
-	MinorFaults             *float64                `json:"process_minor_faults"`
-	ContextSwitches         *float64                `json:"process_context_switches"`
-	NodeEnergyJoules        *float64                `json:"node_cpu_package_energy_joules"`
-	JoulesPerOutputToken    *float64                `json:"node_cpu_package_joules_per_output_token"`
-	Observed                map[string]Distribution `json:"observed"`
-	Unavailable             []string                `json:"unavailable"`
+type servingResources struct {
+	ObservationSeconds      float64                      `json:"observation_seconds"`
+	AverageCPUPercent       *float64                     `json:"process_average_cpu_percent"`
+	GPUEnergyJoules         *float64                     `json:"node_gpu_energy_joules"`
+	GPUJoulesPerOutputToken *float64                     `json:"node_gpu_joules_per_output_token"`
+	Scope                   string                       `json:"scope"`
+	Samples                 int                          `json:"samples"`
+	SampledPeakRSSBytes     *float64                     `json:"sampled_peak_rss_bytes"`
+	SampledPeakPSSBytes     *float64                     `json:"sampled_peak_pss_bytes"`
+	LifetimePeakRSSBytes    *float64                     `json:"process_lifetime_peak_rss_bytes"`
+	InitialRSSBytes         *float64                     `json:"initial_rss_bytes"`
+	FinalRSSBytes           *float64                     `json:"final_rss_bytes"`
+	CPUSeconds              *float64                     `json:"process_cpu_seconds"`
+	CPUSecondsPerRequest    *float64                     `json:"process_cpu_seconds_per_successful_request"`
+	ReadBytes               *float64                     `json:"process_read_bytes"`
+	WriteBytes              *float64                     `json:"process_write_bytes"`
+	MajorFaults             *float64                     `json:"process_major_faults"`
+	MinorFaults             *float64                     `json:"process_minor_faults"`
+	ContextSwitches         *float64                     `json:"process_context_switches"`
+	NodeEnergyJoules        *float64                     `json:"node_cpu_package_energy_joules"`
+	JoulesPerOutputToken    *float64                     `json:"node_cpu_package_joules_per_output_token"`
+	Observed                map[string]distributionStats `json:"observed"`
+	Unavailable             []string                     `json:"unavailable"`
 }
 
-func (r ServingReport) Validate() error {
+func (r servingReport) Validate() error {
 	if r.SchemaVersion != "modelgauge-serving/v1" || len(r.Cases) > 128 {
 		return errors.New("invalid serving report schema or case count")
 	}
-	if _, err := ServingURL(r.Endpoint); err != nil {
-		return err
+	if r.Endpoint != "" || len(r.Cases) > 0 {
+		if _, err := servingURL(r.Endpoint); err != nil {
+			return err
+		}
+	}
+	for _, value := range []*float64{r.StartupMS, r.ShutdownMS} {
+		if value != nil && (!finite(*value) || *value < 0) {
+			return errors.New("invalid process lifecycle timing")
+		}
 	}
 	seen := map[string]bool{}
 	for _, c := range r.Cases {
@@ -361,11 +391,11 @@ func (r ServingReport) Validate() error {
 	return nil
 }
 
-func DecodeServingPlan(plan protocol.Plan) (*ServingPlan, error) {
+func decodeServingPlan(plan protocol.Plan) (*servingPlan, error) {
 	if plan.Benchmark == nil || plan.Benchmark.Kind != "serving" {
 		return nil, errors.New("provide a serving benchmark plan")
 	}
-	var serving ServingPlan
+	var serving servingPlan
 	decoder := json.NewDecoder(strings.NewReader(string(plan.Benchmark.Config)))
 	decoder.DisallowUnknownFields()
 	if err := decoder.Decode(&serving); err != nil {
@@ -374,11 +404,11 @@ func DecodeServingPlan(plan protocol.Plan) (*ServingPlan, error) {
 	return &serving, nil
 }
 
-func DecodeServingReport(result protocol.Result) (*ServingReport, error) {
+func decodeServingReport(result protocol.Result) (*servingReport, error) {
 	if result.Benchmark == nil || result.Benchmark.Kind != "serving" {
 		return nil, errors.New("provide a serving benchmark result")
 	}
-	var serving ServingReport
+	var serving servingReport
 	if err := json.Unmarshal(result.Benchmark.Data, &serving); err != nil {
 		return nil, err
 	}
@@ -387,19 +417,27 @@ func DecodeServingReport(result protocol.Result) (*ServingReport, error) {
 
 func servingImplementation() implementation {
 	return implementation{
+		profile: "node-serving",
+		plan:    servingProfile,
 		validate: func(plan protocol.Plan) error {
-			if plan.Runtime.Kind != "http" || len(plan.Cases) != 0 {
-				return errors.New("serving requires runtime.kind=http and benchmark.config.cases")
+			if plan.Runtime.Kind != "llama-server" || len(plan.Cases) != 0 || plan.Model.Path == "" || len(plan.Model.SHA256) != 64 {
+				return errors.New("node serving requires runtime.kind=llama-server, an installed model path/checksum, and benchmark.config.cases")
 			}
-			serving, err := DecodeServingPlan(plan)
+			serving, err := decodeServingPlan(plan)
 			if err != nil {
 				return err
+			}
+			if serving.Server == nil {
+				return errors.New("node serving requires a managed server configuration; regenerate this plan with --profile node-serving")
+			}
+			if serving.ServedModel != plan.Model.ID {
+				return errors.New("served model must match the installed model ID")
 			}
 			return serving.Validate()
 		},
 		run: runServingPlan,
 		validateReport: func(data json.RawMessage) error {
-			var report ServingReport
+			var report servingReport
 			decoder := json.NewDecoder(strings.NewReader(string(data)))
 			decoder.DisallowUnknownFields()
 			if err := decoder.Decode(&report); err != nil {
@@ -407,10 +445,10 @@ func servingImplementation() implementation {
 			}
 			return report.Validate()
 		},
-		csv:           WriteServingCSV,
+		csv:           writeServingCSV,
 		metricsHeader: servingMetricsHeader,
 		metrics: func(out *strings.Builder, node, mode, model string, data json.RawMessage) error {
-			var report ServingReport
+			var report servingReport
 			if err := json.Unmarshal(data, &report); err != nil {
 				return err
 			}

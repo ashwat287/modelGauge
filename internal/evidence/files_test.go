@@ -3,6 +3,7 @@ package evidence
 import (
 	"archive/tar"
 	"bytes"
+	"context"
 	"crypto/sha256"
 	"fmt"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
@@ -22,7 +23,7 @@ func TestRawCopyAndArchiveValidation(t *testing.T) {
 	_ = os.MkdirAll(filepath.Join(source, r.RunID), 0700)
 	_ = os.WriteFile(filepath.Join(source, r.RunID, r.Name), data, 0600)
 	destination := t.TempDir()
-	if err := CopyLocal(source, destination, []protocol.EvidenceRef{r}); err != nil {
+	if err := CopyLocalContext(context.Background(), source, destination, []protocol.EvidenceRef{r}); err != nil {
 		t.Fatal(err)
 	}
 	got, _ := os.ReadFile(filepath.Join(destination, r.RunID, r.Name))
@@ -52,7 +53,7 @@ func TestRawCopyAndArchiveValidation(t *testing.T) {
 				_, _ = writer.Write(payload)
 			}
 			_ = writer.Close()
-			err := ReceiveArchive(&buffer, t.TempDir(), []protocol.EvidenceRef{r})
+			err := ReceiveArchiveContext(context.Background(), &buffer, t.TempDir(), []protocol.EvidenceRef{r})
 			if (err == nil) != (scenario == "valid") {
 				t.Fatalf("unexpected result: %v", err)
 			}
@@ -67,7 +68,7 @@ func TestSymlinkAndUnsafeReferenceRefused(t *testing.T) {
 	outside := filepath.Join(t.TempDir(), "private")
 	_ = os.WriteFile(outside, data, 0600)
 	_ = os.Symlink(outside, filepath.Join(source, r.RunID, r.Name))
-	if err := CopyLocal(source, t.TempDir(), []protocol.EvidenceRef{r}); err == nil {
+	if err := CopyLocalContext(context.Background(), source, t.TempDir(), []protocol.EvidenceRef{r}); err == nil {
 		t.Fatal("followed a symlink")
 	}
 	for _, name := range []string{"../secret", "/etc/passwd", "a/../../b", "a\\b", "a/./b"} {

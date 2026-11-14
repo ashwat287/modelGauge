@@ -128,7 +128,7 @@ channel is deployed. A firing rule therefore does not imply email/Slack delivery
 Verify Prometheus **Status → Targets**, or its `/api/v1/targets` endpoint. Expected
 healthy targets are Prometheus, controller, control exporter, and each explicitly
 configured benchmark exporter. Do not assume four targets if only one exporter
-is installed. Grafana `/api/health` checks its database. Submit a real campaign
+is installed. Grafana `/api/health` checks its database. Apply a real YAML experiment
 and inspect operations/result gauges after completion; dashboards do not show
 live tokens generated per second while a case is running.
 

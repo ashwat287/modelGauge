@@ -2,8 +2,8 @@
 
 **Find out how fast an AI model runs on a node, how much memory it uses, and which measured configuration fits.**
 
-ModelGauge is one Go executable with three roles: a host CLI, a controller in k3s,
-and a Linux agent on each measured node. It benchmarks GGUF models with CPU-only
+ModelGauge is one Go executable with a host CLI, a controller with an embedded executor in
+k3s, and temporary workers on measured Linux nodes. It benchmarks GGUF models with CPU-only
 `llama.cpp`, stores results in PostgreSQL, and provisions Prometheus/Grafana.
 Lima provides separate Linux control and benchmark VMs for local use.
 
@@ -28,13 +28,13 @@ Lima provides separate Linux control and benchmark VMs for local use.
 ## ✅ What works today
 
 - Create/reuse a Lima control VM running k3s, PostgreSQL, the controller, Prometheus and Grafana.
-- Provision a separate Linux benchmark VM with a pinned CPU-only `llama-bench` runtime and a persistent agent.
+- Provision a separate Linux benchmark VM with pinned CPU-only `llama-bench`/`llama-server` runtimes and temporary supervised workers.
 - Resolve catalog models, download checksum-verified GGUF files remotely, and inventory installed models.
-- Generate per-model plans and multi-model campaigns with thread/context matrices.
+- Declare ordered, multi-model/multi-node experiments in YAML with thread/context matrices.
 - Measure prompt processing, generation throughput and peak resident memory; retain raw evidence on the node.
-- In current source, benchmark an existing inference endpoint for streaming latency, concurrency/goodput, context/cache behavior, sustained load, task fixtures, cancellation and available resource metrics. See [serving benchmarks](docs/BENCHMARKING.md#-benchmarks-against-an-existing-inference-endpoint); no server or infrastructure provisioning is added.
+- Benchmark installed models on the measured node with a `node-serving` YAML stage: ModelGauge starts a temporary loopback-only model process, measures startup, streaming latency, concurrency/goodput, cache behavior, sustained load, fixture checks and process resources, then stops it. See [node serving benchmarks](docs/BENCHMARKING.md#-serving-benchmarks-on-the-measured-node).
 - Query results and deterministic, evidence-linked thread/memory recommendations.
-- Recover interrupted work using leases, checkpoints and a durable agent journal; cancel queued or active jobs.
+- Recover interrupted work using leases, checkpoints and a durable controller-side executor journal; cancel queued or active jobs.
 - Current source builds export results as JSON/CSV, current metrics, optional Prometheus history and verified raw evidence.
 - Current source builds track bootstrap ownership and support scoped cleanup/dry runs; this is not included in v0.1.0.
 - Build macOS/Linux ARM64/AMD64 release artifacts and matching digest-pinned controller metadata.
@@ -65,7 +65,7 @@ modelgauge control bootstrap --provider lima --source .
 modelgauge node bootstrap --provider lima --name benchmark-node --source .
 modelgauge node status benchmark-node
 
-# Queue the download on the node, rather than on this host.
+# The controller now owns execution automatically. Queue the download on the node, rather than on this host.
 modelgauge model install qwen2.5-1.5b-instruct:q4_k_m --node benchmark-node
 ```
 
@@ -76,13 +76,12 @@ wait for `completed`, then confirm the model appears in inventory:
 modelgauge model install status JOB_ID
 modelgauge model list --node benchmark-node
 
-# Start small: one context, two thread counts, one model.
-modelgauge benchmark campaign create \
-  --node benchmark-node --execution-mode lima-linux \
-  --models qwen2.5-1.5b-instruct:q4_k_m \
-  --contexts 512 --threads 1,2 --output campaigns/first --submit
-
-modelgauge benchmark campaign status --file campaigns/first/campaign.json
+# Start small: edit the node/model IDs in the declarative example.
+cp examples/benchmark.yaml benchmark.yaml
+modelgauge validate -f benchmark.yaml
+modelgauge apply -f benchmark.yaml --dry-run
+modelgauge apply -f benchmark.yaml
+modelgauge status -f benchmark.yaml
 modelgauge results show --node benchmark-node
 modelgauge results recommend \
   --node benchmark-node --model qwen2.5-1.5b-instruct:q4_k_m \
@@ -90,7 +89,7 @@ modelgauge results recommend \
 modelgauge monitoring open
 ```
 
-Poll campaign status until its plans finish before requesting a recommendation.
+Poll experiment status until its plans finish before requesting a recommendation.
 `JOB_ID` is a placeholder; never reuse IDs from historical validation records.
 See the [full tutorial](docs/GETTING-STARTED.md) for expectations and troubleshooting.
 
@@ -105,11 +104,12 @@ flowchart LR
     GRAF[Grafana] -->|query| PROM
   end
   subgraph Measured["Measured Linux node / Lima VM • outside k3s"]
-    AGENT["modelgauge agent"] --> RUN["llama-bench + GNU time"]
-    AGENT --> CACHE["GGUF cache / local evidence"]
+    WORKER["Temporary worker"] --> RUN["llama-bench, then temporary llama-server"]
+    WORKER --> CACHE["GGUF cache / local evidence"]
     EXP["node exporter (optional setup)"]
   end
-  AGENT -->|"poll, lease, renew, upload"| API
+  API --> EXEC["Controller: embedded executor"]
+  EXEC -->|"one plan + keepalives over SSH"| WORKER
   PROM -->|"private network"| EXP
 ```
 
@@ -154,14 +154,13 @@ Linux VM measurements and their original evidence.
 cmd/modelgauge/          executable entry point
 internal/cli/           commands and human help
 internal/control/       Lima bootstrap, images, local forwarding
-internal/agent/         polling, Linux service management, recovery
+internal/agent/         external polling, temporary node workers, recovery
 internal/benchmark/     llama-bench execution and evidence collection
 internal/controller/    PostgreSQL store, queueing, migrations, recommendations
 internal/modelcache/    catalog and checksum-verified downloads
 internal/server/        authenticated HTTP routes
 internal/releases/      matching release resolution and downloads
 internal/platform/      Linux facts, locks, atomic file operations
-internal/profile/       standard-cpu plan generation
 pkg/protocol/           versioned shared plan/result contracts
 deploy/                 embedded k3s, monitoring and dashboard assets
 tools/release/          cross-platform binaries and release manifests

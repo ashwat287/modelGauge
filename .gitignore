@@ -30,3 +30,6 @@ dist/
 
 # Local experiment export bundles
 /exports/
+
+# Default go build output
+/modelgauge

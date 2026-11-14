@@ -18,6 +18,13 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/modelcache"
 )
 
+type catalogModel struct {
+	ID        string `json:"id"`
+	SHA256    string `json:"sha256"`
+	SizeBytes int64  `json:"size_bytes"`
+	Path      string `json:"path"`
+}
+
 func runModel(ctx context.Context, args []string, stdout, stderr io.Writer) int {
 	if len(args) == 0 {
 		fmt.Fprintln(stderr, "usage: modelgauge model <list|install>")

@@ -10,7 +10,6 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/client"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
-	"github.com/nerdylucifer/modelgauge/internal/profile"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"io"
 	"os"
@@ -18,7 +17,6 @@ import (
 	"path/filepath"
 	"regexp"
 	"runtime"
-	"strconv"
 	"strings"
 	"syscall"
 )
@@ -37,6 +35,8 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 	}
 
 	switch args[0] {
+	case "validate", "apply", "status", "cancel":
+		return runDeclaration(ctx, args[0], args[1:], stdout, stderr)
 	case "export":
 		return runExport(ctx, args[1:], stdout, stderr)
 	case "cleanup":
@@ -173,8 +173,6 @@ func runBenchmark(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		return 2
 	}
 	switch args[0] {
-	case "serving":
-		return runServing(ctx, args[1:], stdout, stderr)
 	case "cancel":
 		return cancelJob(ctx, args[1:], stdout, stderr, false)
 	case "campaign":
@@ -184,9 +182,10 @@ func runBenchmark(ctx context.Context, args []string, stdout, stderr io.Writer) 
 			fmt.Fprintln(stderr, "usage: modelgauge benchmark profiles list")
 			return 2
 		}
-		return writeJSON(stdout, profile.Names())
+		return writeJSON(stdout, benchmark.Profiles())
 	case "plan":
-		return runBenchmarkPlan(ctx, args[1:], stdout, stderr)
+		fmt.Fprintln(stderr, "benchmark plan create was replaced by modelgauge apply -f benchmark.yaml")
+		return 2
 	case "run":
 		flags := flag.NewFlagSet("benchmark run", flag.ContinueOnError)
 		setFlagOutput(flags, stderr)
@@ -199,7 +198,7 @@ func runBenchmark(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		if !ok {
 			return 1
 		}
-		result, outputDir, err := benchmark.Run(ctx, plan, *outputPath)
+		result, outputDir, err := benchmark.Run(ctx, plan, benchmark.Options{OutputDir: *outputPath})
 		if err != nil {
 			fmt.Fprintf(stderr, "run benchmark: %v\n", err)
 			return 1
@@ -255,91 +254,6 @@ func runBenchmark(ctx context.Context, args []string, stdout, stderr io.Writer) 
 		fmt.Fprintf(stderr, "unknown benchmark command %q\n", args[0])
 		return 2
 	}
-}
-
-func runBenchmarkPlan(ctx context.Context, args []string, stdout, stderr io.Writer) int {
-	if len(args) == 0 || args[0] != "create" {
-		fmt.Fprintln(stderr, "usage: modelgauge benchmark plan create --node ID --model PATH --profile standard-cpu [options]")
-		return 2
-	}
-	flags := flag.NewFlagSet("benchmark plan create", flag.ContinueOnError)
-	setFlagOutput(flags, stderr)
-	nodeID := flags.String("node", "", "target node ID")
-	modelPath := flags.String("model", "", "absolute model path on the target node")
-	modelID := flags.String("model-id", "", "stable model ID (default: model filename)")
-	profileName := flags.String("profile", profile.StandardCPU, "benchmark profile")
-	binary := flags.String("binary", "", "absolute llama-bench path on the target node")
-	mode := flags.String("execution-mode", "native-isolated", "native-isolated or lima-linux")
-	threadsText := flags.String("threads", "1,2", "comma-separated thread counts")
-	contextsText := flags.String("contexts", "512,4096,8192", "comma-separated prompt contexts")
-	warmups := flags.Int("warmups", 3, "warm-up repetitions per case")
-	repetitions := flags.Int("repetitions", 5, "measured repetitions per case")
-	overwrite := flags.Bool("overwrite", false, "replace an existing generated plan")
-	output := flags.String("output", "", "plan output path")
-	if err := flags.Parse(args[1:]); err != nil {
-		return flagExitCode(err)
-	}
-	if *profileName != profile.StandardCPU {
-		fmt.Fprintf(stderr, "unknown profile %q\n", *profileName)
-		return 2
-	}
-	if *nodeID == "" || *modelPath == "" {
-		fmt.Fprintln(stderr, "--node and --model are required")
-		return 2
-	}
-	threads, err := integerList(*threadsText)
-	if err != nil {
-		fmt.Fprintf(stderr, "--threads: %v\n", err)
-		return 2
-	}
-	contexts, err := integerList(*contextsText)
-	if err != nil {
-		fmt.Fprintf(stderr, "--contexts: %v\n", err)
-		return 2
-	}
-	plan, err := profile.StandardCPUPlanContext(ctx, profile.Options{NodeID: *nodeID, ExecutionMode: protocol.ExecutionMode(*mode), ModelPath: *modelPath, ModelID: *modelID, Binary: *binary, Threads: threads, Contexts: contexts, Warmups: *warmups, Repetitions: *repetitions})
-	if err != nil {
-		fmt.Fprintf(stderr, "create plan: %v\n", err)
-		return 1
-	}
-	if err := benchmark.ValidatePlan(plan); err != nil {
-		fmt.Fprintf(stderr, "create plan: %v\n", err)
-		return 1
-	}
-	if *output == "" {
-		*output = filepath.Base(plan.Model.ID) + "-" + *profileName + ".json"
-	}
-	if err := ctx.Err(); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
-	writePlan := platform.WriteJSONNew
-	if *overwrite {
-		if info, e := os.Lstat(*output); e == nil && !info.Mode().IsRegular() {
-			fmt.Fprintln(stderr, "refusing to replace a non-regular plan path")
-			return 1
-		}
-		writePlan = platform.WriteJSON
-	}
-	if err := writePlan(*output, plan, 0600); err != nil {
-		fmt.Fprintf(stderr, "create plan file: %v\n", err)
-		return 1
-	}
-	fmt.Fprintf(stdout, "✅ Created %s\n", *output)
-	return 0
-}
-
-func integerList(value string) ([]int, error) {
-	parts := strings.Split(value, ",")
-	result := make([]int, 0, len(parts))
-	for _, part := range parts {
-		number, err := strconv.Atoi(strings.TrimSpace(part))
-		if err != nil || number < 1 {
-			return nil, fmt.Errorf("expected positive integers")
-		}
-		result = append(result, number)
-	}
-	return result, nil
 }
 
 func loadPlan(path string, stderr io.Writer) (protocol.Plan, bool) {
@@ -408,6 +322,7 @@ Usage: modelgauge <command> [options]
   node bootstrap      Create/reuse a separate Linux benchmark VM
   node list           List registered measured nodes (JSON)
   node status ID      Inspect a registered node (JSON)
+  node reconnect --name ID  Refresh a managed node's SSH connection
   node inspect        Inspect this Linux machine (JSON)
 
 📦 Models
@@ -418,15 +333,17 @@ Usage: modelgauge <command> [options]
   model list --node ID        List a node's installed models (JSON)
 
 🧪 Experiments
+  validate -f FILE.yaml      Validate a declaration and installed targets
+  apply -f FILE.yaml         Queue an immutable named experiment
+  apply -f FILE.yaml --dry-run  Preview resolved plans without execution
+  status -f FILE.yaml        Read experiment progress (JSON)
+  cancel -f FILE.yaml        Cancel all queued/active jobs in the experiment
+
+🔧 Legacy plan tools (prefer declarative experiments)
   benchmark profiles list    List supported benchmark profiles (JSON)
-  benchmark campaign create  Generate plans for installed model IDs
   benchmark campaign status  Read campaign progress (JSON)
-  benchmark plan create      Generate one plan using a model file
   benchmark submit --plan FILE  Queue a plan (JSON)
   benchmark run --plan FILE   Execute locally on Linux
-  benchmark serving plan     Plan benchmarks for an existing inference endpoint
-  benchmark serving run      Measure serving latency, load, quality and resources
-  benchmark serving report   Read a serving result as JSON or CSV
   benchmark cancel PLAN_ID   Cancel queued or active work (JSON)
   plan example               Print an editable plan template (JSON)
   plan validate FILE         Validate a plan without running it
@@ -454,10 +371,6 @@ JSON responses and plain version output remain suitable for scripts.
 `)
 }
 
-// Run is retained for embedded callers; the executable supplies signal handling.
-func Run(args []string, out, stderr io.Writer) int {
-	return RunContext(context.Background(), args, out, stderr)
-}
 func RunWithSignals(args []string, out, stderr io.Writer) int {
 	ctx, cancel := context.WithCancelCause(context.Background())
 	defer cancel(nil)

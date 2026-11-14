@@ -171,7 +171,7 @@ func managedBinary(ctx context.Context, name, arch string) ([]byte, error) {
 	return nil, fmt.Errorf("guest helper is not registered")
 }
 
-func ownershipPayload(v ownedVM, operation string, files []string) ([]byte, error) {
+func ownershipPayload(v ownedVM, operation string, files []string, allowQueued bool) ([]byte, error) {
 	checkIdle := operation == "bootstrap-prepare"
 	if operation == "inspect-cleanup" {
 		operation = "inspect"
@@ -179,7 +179,7 @@ func ownershipPayload(v ownedVM, operation string, files []string) ([]byte, erro
 	if checkIdle {
 		operation = "prepare"
 	}
-	return json.Marshal(guest.Request{CheckIdle: checkIdle, ID: v.ID, Role: v.Role, Operation: operation, Files: files, Cleaned: v.Cleaned, Prepared: v.Prepared, Unprepared: !v.Prepared, MachineID: v.MachineID})
+	return json.Marshal(guest.Request{AllowQueued: allowQueued && checkIdle && v.Role == "control", CheckIdle: checkIdle, ID: v.ID, Role: v.Role, Operation: operation, Files: files, Cleaned: v.Cleaned, Prepared: v.Prepared, Unprepared: !v.Prepared, MachineID: v.MachineID})
 }
 
 // Failed preparation must not replace a working cache when the guest still uses

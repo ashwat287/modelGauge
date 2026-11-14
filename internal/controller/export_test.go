@@ -31,7 +31,7 @@ func TestNodeExportScopeAndCredentialExclusion(t *testing.T) {
 	if _, err = s.QueueInstall(ctx, InstallJob{NodeID: "export-node", ModelID: "pending-model", SourceURL: "https://example.com/model.gguf?private=do-not-export"}); err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := s.ExportNode(ctx, "export-node")
+	snapshot, err := s.ExportNodeRun(ctx, "export-node", "")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -44,7 +44,7 @@ func TestNodeExportScopeAndCredentialExclusion(t *testing.T) {
 			t.Fatalf("export included %s", forbidden)
 		}
 	}
-	if _, err = s.ExportNode(ctx, "missing-node"); !errors.Is(err, ErrNotFound) {
+	if _, err = s.ExportNodeRun(ctx, "missing-node", ""); !errors.Is(err, ErrNotFound) {
 		t.Fatal("missing node was not rejected:", err)
 	}
 }

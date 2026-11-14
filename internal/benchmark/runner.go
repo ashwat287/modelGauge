@@ -3,12 +3,9 @@ package benchmark
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -26,7 +23,7 @@ import (
 
 const resultSchemaV1 = "benchmark-result/v1"
 
-type HostSnapshot struct {
+type hostSnapshot struct {
 	CapturedAt time.Time     `json:"captured_at"`
 	Host       platform.Host `json:"host"`
 	Swap       string        `json:"swap,omitempty"`
@@ -48,21 +45,12 @@ type Options struct {
 	OutputDir string
 }
 
-// Run executes plan and stores a complete evidence bundle in outputDir.
-func Run(ctx context.Context, plan protocol.Plan, outputDir string) (protocol.Result, string, error) {
-	return RunWithOptions(ctx, plan, Options{OutputDir: outputDir})
-}
-
-// runEnginePlan executes the legacy llama-bench workload.
+// runEnginePlan executes direct throughput/RSS cases and persists their evidence.
 func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (protocol.Result, string, error) {
 	if runtime.GOOS != "linux" {
 		return protocol.Result{}, "", fmt.Errorf("benchmark execution requires Linux; on a Mac, run the agent inside a Lima Linux VM")
 	}
-	unlock, err := platform.Lock("execution")
-	if err != nil {
-		return protocol.Result{}, "", err
-	}
-	defer unlock()
+
 	if err := validateEnginePlan(plan); err != nil {
 		return protocol.Result{}, "", fmt.Errorf("validate plan: %w", err)
 	}
@@ -108,7 +96,7 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 			return protocol.Result{}, outputDir, fmt.Errorf("refusing to resume an unrecognized nonempty output directory")
 		}
 	}
-	binaryHash, err := sha256FileContext(ctx, binary)
+	binaryHash, err := platform.SHA256File(ctx, binary)
 	if err != nil {
 		return protocol.Result{}, outputDir, err
 	}
@@ -325,7 +313,6 @@ func resolveBinary(configured string) (string, error) {
 	return binary, nil
 }
 
-func verifyModel(model protocol.Model) error { return verifyModelContext(context.Background(), model) }
 func verifyModelContext(ctx context.Context, model protocol.Model) error {
 	if _, err := os.Stat(model.Path); err != nil {
 		return fmt.Errorf("model %q: %w", model.Path, err)
@@ -333,7 +320,7 @@ func verifyModelContext(ctx context.Context, model protocol.Model) error {
 	if model.SHA256 == "" {
 		return nil
 	}
-	digest, err := sha256FileContext(ctx, model.Path)
+	digest, err := platform.SHA256File(ctx, model.Path)
 	if err != nil {
 		return err
 	}
@@ -359,12 +346,12 @@ func parseLlamaBench(path string) (llamaBenchResult, error) {
 	return rows[0], nil
 }
 
-func snapshot() (HostSnapshot, error) {
+func snapshot() (hostSnapshot, error) {
 	host, err := platform.Inspect()
 	if err != nil {
-		return HostSnapshot{}, err
+		return hostSnapshot{}, err
 	}
-	return HostSnapshot{CapturedAt: time.Now().UTC(), Host: host, Swap: swapStatus()}, nil
+	return hostSnapshot{CapturedAt: time.Now().UTC(), Host: host, Swap: swapStatus()}, nil
 }
 
 func swapStatus() string {
@@ -398,20 +385,6 @@ func writeJSON(path string, value any) error {
 	return platform.WriteJSON(path, value, 0640)
 }
 
-func sha256File(path string) (string, error) { return sha256FileContext(context.Background(), path) }
-func sha256FileContext(ctx context.Context, path string) (string, error) {
-	file, err := os.Open(path)
-	if err != nil {
-		return "", err
-	}
-	defer file.Close()
-	hash := sha256.New()
-	if _, err := io.Copy(hash, contextReader{ctx, file}); err != nil {
-		return "", err
-	}
-	return hex.EncodeToString(hash.Sum(nil)), nil
-}
-
 func collectArtifacts(root string) ([]protocol.Artifact, error) {
 	var artifacts []protocol.Artifact
 	err := filepath.WalkDir(root, func(path string, entry os.DirEntry, err error) error {
@@ -421,7 +394,7 @@ func collectArtifacts(root string) ([]protocol.Artifact, error) {
 		if entry.IsDir() || entry.Name() == "result.json" {
 			return nil
 		}
-		digest, err := sha256File(path)
+		digest, err := platform.SHA256File(context.Background(), path)
 		if err != nil {
 			return err
 		}
@@ -437,18 +410,6 @@ func collectArtifacts(root string) ([]protocol.Artifact, error) {
 	}
 	sort.Slice(artifacts, func(i, j int) bool { return artifacts[i].Name < artifacts[j].Name })
 	return artifacts, nil
-}
-
-type contextReader struct {
-	ctx    context.Context
-	reader io.Reader
-}
-
-func (r contextReader) Read(p []byte) (int, error) {
-	if err := r.ctx.Err(); err != nil {
-		return 0, err
-	}
-	return r.reader.Read(p)
 }
 
 func prepareOutputDir(path string, resume bool) error {

@@ -28,20 +28,22 @@ different roles and are not interchangeable.
 | `~/.config/modelgauge/control.json` | Host CLI active connection |
 | `~/.config/modelgauge/control.env` | Control VM generated tokens from secret setup |
 | `~/.kube/modelgauge-config` | Control VM kubeconfig created by bootstrap |
-| `~/.config/modelgauge/agent.env` | Linux agent's private environment |
+| `~/.config/modelgauge/agent.env` | Legacy manually enrolled Linux agent only; absent on new managed nodes |
 | `~/.config/systemd/user/modelgauge-agent.service` | Linux user service |
 | `~/.local/bin/modelgauge` | Managed guest executable |
 | `~/.local/share/modelgauge/runtime/REVISION/` | Cached pinned llama.cpp build |
 | `~/.local/share/modelgauge/runtime/current` | Active runtime symlink |
 | `~/.local/share/modelgauge/models/` | Managed model cache |
 | `~/.local/share/modelgauge/model-inventory.json` | Cached inventory checksums, refreshed when file size or modification time changes |
-| `~/.local/share/modelgauge/results/` | Lima-managed agent evidence/journal |
+| `~/.local/share/modelgauge/results/` | Measured VM raw evidence and stage checkpoints |
+| `/var/lib/modelgauge/connections/NODE.json` | Controller PVC: private SSH connection (mode 0600) |
+| `/var/lib/modelgauge/runs/NODE/` | Controller PVC: pending journal and saved result for uploads |
 | `~/.local/share/modelgauge/deploy/` | Control VM embedded deployment assets |
 | `~/.cache/modelgauge/releases/` | Verified matching Linux release agents on CLI host |
 
 Direct `benchmark run` defaults to a `results/` directory relative to the invoking
 working directory. Manual `agent install` defaults to `~/modelgauge-results`;
-Lima bootstrap passes the managed path explicitly. The service uses its installed
+Lima bootstrap uses a temporary worker and keeps its controller journal on the host. The legacy service uses its installed
 environment file; foreground `agent run` reads the current shell environment.
 
 ## 🔑 Environment reference
@@ -67,7 +69,22 @@ Prefer a full database URL when you need explicit PostgreSQL TLS settings.
 Component-based connections currently use `sslmode=disable` for the internal lab.
 Never commit tokens, connection files, kubeconfigs or generated Secret manifests.
 
-## 🖥️ Enrolling a remote Linux node manually
+## 🔌 Embedded controller execution
+
+The bundled deployment sets `MODELGAUGE_EXECUTOR_STATE_DIR=/var/lib/modelgauge` and
+mounts the `modelgauge-executor-data` PVC there. The server restores registered
+SSH targets and pending journals on startup. Node bootstrap registers credentials
+through the admin API. It uses a dedicated per-node private key, exact SSH host-key
+verification and the existing Lima forwarded SSH port. Private keys belong only
+to the controller; back up its PVC as credential-bearing data.
+
+`--executor-state-dir PATH` configures the same behavior for manual server starts.
+Without the flag/environment setting, legacy agent-driven servers remain supported
+and connection enrollment returns 503. The current host `executor run` command is
+removed. Upgrades and cleanup pause controller-owned workers; pending work blocks
+them until it finishes. Old host-side journals are retained and never adopted.
+
+## 🖥️ Legacy: enrolling a remote Linux node manually
 
 This is for an already reachable Linux machine; automated `node bootstrap` only
 manages a local Lima guest. Install the matching Linux ModelGauge binary and
@@ -89,7 +106,7 @@ modelgauge agent status
 
 For a Lima target choose `--kind virtual --execution-mode lima-linux` and an API
 address reachable from that guest. On the CLI host, configure the matching admin
-connection before `node list` and model/campaign commands. Do not copy the admin
+connection before `node list` and model/experiment commands. Do not copy the admin
 token onto measured nodes. The shared agent token currently is not restricted to
 one node identity; use this development setup only on trusted networks.
 
@@ -123,3 +140,11 @@ Model discovery prefers the managed model directory, then `~/models`, then
 `~/benchmark-work/models` when filenames produce the same model ID. Inventory
 fingerprints avoid repeated full-file scans; execution still verifies model
 checksums before benchmarking.
+
+## 📋 Benchmark declarations
+
+Workload configuration lives in a `Benchmark` YAML file, separate from connection
+credentials and VM provisioning settings. See the [complete schema and defaults](BENCHMARKING.md#️-declaration-fields-and-defaults)
+and [example](../examples/benchmark.yaml). Use `validate -f FILE` or
+`apply -f FILE --dry-run` before queuing work. Keep the accepted file to query or
+cancel that immutable experiment; use a new `metadata.name` for another run.

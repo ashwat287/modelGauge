@@ -14,6 +14,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/nerdylucifer/modelgauge/internal/agent"
 	"github.com/nerdylucifer/modelgauge/internal/benchmark"
 	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/controller"
@@ -22,6 +23,7 @@ import (
 )
 
 type Config struct {
+	Executor   *agent.ControllerExecutor
 	AgentToken string
 	AdminToken string
 	LeaseTTL   time.Duration
@@ -49,6 +51,14 @@ func New(store *controller.Store, config Config) *Server {
 func (s *Server) Handler() http.Handler { return s.mux }
 
 func (s *Server) routes() {
+	s.mux.HandleFunc("POST /v1/experiments", s.requireAdmin(s.applyExperiment))
+	s.mux.HandleFunc("GET /v1/experiments/{name}", s.requireAdmin(s.experiment))
+	s.mux.HandleFunc("POST /v1/experiments/{name}/cancel", s.requireAdmin(s.experiment))
+	s.mux.HandleFunc("POST /v1/nodes/{nodeID}/connection/{action}", s.requireAdmin(s.executorConnection))
+	for _, method := range []string{"GET", "PUT", "DELETE"} {
+		s.mux.HandleFunc(method+" /v1/nodes/{nodeID}/connection", s.requireAdmin(s.executorConnection))
+	}
+
 	s.mux.HandleFunc("GET /healthz", s.healthz)
 	s.mux.HandleFunc("GET /metrics", s.metrics)
 	s.mux.HandleFunc("POST /v1/plans", s.requireAdmin(s.queuePlan))
@@ -91,7 +101,18 @@ func (s *Server) nodeStatus(w http.ResponseWriter, r *http.Request) {
 	}
 	for _, node := range nodes {
 		if node.ID == r.PathValue("nodeID") {
-			writeJSON(w, 200, node)
+			var executor map[string]any
+			if s.config.Executor != nil {
+				executor, err = s.config.Executor.Status(node.ID)
+				if err != nil {
+					s.internalError(w, r, err)
+					return
+				}
+			}
+			writeJSON(w, 200, struct {
+				controller.Node
+				Executor map[string]any `json:"executor,omitempty"`
+			}{node, executor})
 			return
 		}
 	}

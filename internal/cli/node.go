@@ -15,6 +15,30 @@ import (
 )
 
 func runNodeManagement(ctx context.Context, args []string, out, stderr io.Writer) int {
+	if args[0] == "reconnect" {
+		f := flag.NewFlagSet("node reconnect", flag.ContinueOnError)
+		setFlagOutput(f, stderr)
+		name := f.String("name", "", "managed benchmark VM name")
+		if err := f.Parse(args[1:]); err != nil {
+			return flagExitCode(err)
+		}
+		if *name == "" || f.NArg() != 0 {
+			fmt.Fprintln(stderr, "usage: modelgauge node reconnect --name NODE_ID")
+			return 2
+		}
+		c, err := control.Load()
+		if err == nil {
+			ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
+			defer cancel()
+			err = control.ReconnectNode(ctx, c, *name)
+		}
+		if err != nil {
+			fmt.Fprintln(stderr, "node reconnect:", err)
+			return 1
+		}
+		fmt.Fprintf(out, "✅ Refreshed controller connection for %s; queued work can resume.\n", *name)
+		return 0
+	}
 	if args[0] == "bootstrap" {
 		return bootstrapNode(ctx, args[1:], out, stderr)
 	}
@@ -31,7 +55,7 @@ func runNodeManagement(ctx context.Context, args []string, out, stderr io.Writer
 		}
 		path += "/" + url.PathEscape(args[1])
 	} else if args[0] != "list" || len(args) != 1 {
-		fmt.Fprintln(stderr, "usage: modelgauge node <bootstrap|list|status|inspect>")
+		fmt.Fprintln(stderr, "usage: modelgauge node <bootstrap|reconnect|list|status|inspect>")
 		return 2
 	}
 	var response any

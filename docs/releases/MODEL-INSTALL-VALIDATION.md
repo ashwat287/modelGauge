@@ -9,6 +9,9 @@ the Go agent as a systemd user service.
 
 ## 🧪 Reproduce the workflow
 
+These are historical commands. Current releases use `modelgauge apply -f benchmark.yaml`;
+see the [current walkthrough](../GETTING-STARTED.md). The measurements below are retained unchanged.
+
 Run from any CLI machine with its controller URL and admin token loaded. Replace
 `JOB_ID` with the newly returned install job ID; wait for completion before
 creating the campaign. Use a fresh output directory.

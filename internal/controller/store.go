@@ -27,6 +27,9 @@ var ErrConflict = errors.New("state conflict")
 //go:embed migrations/003-submission-requests.sql
 var requestSchema string
 
+//go:embed migrations/004-experiments.sql
+var experimentSchema string
+
 type Store struct {
 	pool *pgxpool.Pool
 }
@@ -43,7 +46,7 @@ type Node struct {
 }
 
 func (s *Store) ListNodes(ctx context.Context) ([]Node, error) {
-	rows, err := s.pool.Query(ctx, `SELECT node_id,display_name,node_kind,execution_mode,hardware,COALESCE(agent_version,''),status,last_seen_at FROM nodes ORDER BY node_id`)
+	rows, err := s.pool.Query(ctx, `SELECT node_id,display_name,node_kind,execution_mode,hardware,COALESCE(agent_version,''),CASE WHEN last_seen_at IS NULL OR last_seen_at < now()-interval '90 seconds' THEN 'offline' ELSE status END,last_seen_at FROM nodes ORDER BY node_id`)
 	if err != nil {
 		return nil, err
 	}
@@ -130,6 +133,9 @@ func (s *Store) Migrate(ctx context.Context) error {
 		return err
 	}
 	if _, err = tx.Exec(ctx, requestSchema); err != nil {
+		return err
+	}
+	if _, err = tx.Exec(ctx, experimentSchema); err != nil {
 		return err
 	}
 	return tx.Commit(ctx)
@@ -219,13 +225,6 @@ func (s *Store) GetInstall(ctx context.Context, id string) (InstallJob, error) {
 	}
 	return job, err
 }
-func (s *Store) LeaseInstall(ctx context.Context, nodeID string) (InstallJob, error) {
-	return s.leaseInstall(ctx, nodeID)
-}
-func (s *Store) CompleteInstall(ctx context.Context, node, id, token, failure string) error {
-	return s.completeInstall(ctx, node, id, token, failure)
-}
-
 func (s *Store) QueuePlan(ctx context.Context, plan protocol.Plan) (string, error) {
 	if err := benchmark.ValidatePlan(plan); err != nil {
 		return "", err

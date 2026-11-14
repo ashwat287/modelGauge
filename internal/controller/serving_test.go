@@ -16,7 +16,7 @@ func TestServingResultsPersistWithoutSchemaChanges(t *testing.T) {
 	if err := s.RegisterNode(ctx, Node{ID: "serving", DisplayName: "serving", Kind: "virtual", ExecutionMode: protocol.ExecutionModeLima}); err != nil {
 		t.Fatal(err)
 	}
-	plan := protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: "serving", ExecutionMode: protocol.ExecutionModeLima, Runtime: protocol.Runtime{Kind: "http"}, Model: protocol.Model{ID: "model"}, Benchmark: &protocol.BenchmarkSpec{Kind: "serving", Config: json.RawMessage(`{"endpoint":"http://localhost:8080","api":"openai","request_timeout_seconds":1,"readiness_timeout_seconds":1,"sample_interval_seconds":1,"cases":[{"id":"load","concurrency":1,"requests":1,"max_output_tokens":16}]}`)}}
+	plan := protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: "serving", ExecutionMode: protocol.ExecutionModeLima, Runtime: protocol.Runtime{Kind: "llama-server"}, Model: protocol.Model{ID: "model", Path: "/models/model.gguf", SHA256: strings.Repeat("a", 64)}, Benchmark: &protocol.BenchmarkSpec{Kind: "serving", Config: json.RawMessage(`{"server":{"threads":1,"context_tokens":1024,"parallel":1},"api":"openai","served_model":"model","request_timeout_seconds":1,"readiness_timeout_seconds":1,"sample_interval_seconds":1,"cases":[{"id":"load","concurrency":1,"requests":1,"max_output_tokens":16}]}`)}}
 	id, err := s.QueuePlan(ctx, plan)
 	if err != nil {
 		t.Fatal(err)
@@ -40,7 +40,7 @@ func TestServingResultsPersistWithoutSchemaChanges(t *testing.T) {
 	if _, err = s.Recommend(ctx, "serving", "model", "lima-linux", 128, 1<<30); !errors.Is(err, ErrNotFound) {
 		t.Fatal("serving data contaminated engine recommendations", err)
 	}
-	exported, err := s.ExportNode(ctx, "serving")
+	exported, err := s.ExportNodeRun(ctx, "serving", "")
 	if err != nil || exported.Results[0].Benchmark == nil {
 		t.Fatal(exported, err)
 	}
