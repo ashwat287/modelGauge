@@ -51,9 +51,14 @@ func TestForegroundCLIStreamsOnceAndReportsFailure(t *testing.T) {
 				defer server.Close()
 				t.Setenv("MODELGAUGE_CONTROLLER_URL", server.URL)
 				t.Setenv("MODELGAUGE_ADMIN_TOKEN", "secret")
-				if err := control.Save(control.Config{Model: "model", ControllerURL: server.URL, AdminToken: "secret"}); err != nil {
+				if err := control.Save(control.Config{VM: "unavailable-monitoring-vm", Model: "model", ControllerURL: server.URL, AdminToken: "secret"}); err != nil {
 					t.Fatal(err)
 				}
+				tools := t.TempDir()
+				if err := os.WriteFile(filepath.Join(tools, "limactl"), []byte("#!/bin/sh\nexit 1\n"), 0700); err != nil {
+					t.Fatal(err)
+				}
+				t.Setenv("PATH", tools)
 				file := filepath.Join(t.TempDir(), "benchmark.yaml")
 				os.WriteFile(file, []byte(yamlPlan), 0600)
 				args := []string{"run", file, "--json"}
@@ -64,6 +69,9 @@ func TestForegroundCLIStreamsOnceAndReportsFailure(t *testing.T) {
 				code := Run(args, &out, &progress)
 				if (code != 0) != fail {
 					t.Fatal(code, &progress)
+				}
+				if operation == "run" && !strings.Contains(progress.String(), "Dashboard unavailable:") {
+					t.Fatal("monitoring failure did not produce fallback", &progress)
 				}
 				if strings.Count(progress.String(), label+": running") != 1 {
 					t.Fatal("running repeated", &progress)
@@ -123,10 +131,21 @@ func TestInterruptWaitsForCancellationWithoutRetry(t *testing.T) {
 	}
 }
 func TestRemovedBackgroundCommandsAreRejected(t *testing.T) {
-	for _, command := range []string{"status", "logs", "cancel", "agent"} {
+	for _, command := range []string{"status", "logs", "cancel", "agent", "monitoring"} {
 		var out, stderr bytes.Buffer
 		if code := Run([]string{command}, &out, &stderr); code != 2 {
 			t.Fatal(command, code)
 		}
+	}
+}
+
+func TestDashboardTimeRangeStaysClickableWithoutExposingOtherQueries(t *testing.T) {
+	var output bytes.Buffer
+	writer := redactedErrors{target: &output, secrets: []string{"secret"}}
+	safe := liveDashboardURL + "?from=1234567890&to=now&refresh=5s"
+	frozen := liveDashboardURL + "?from=1234567890&to=1234567990&refresh="
+	writer.Write([]byte(safe + "\n" + frozen + "\nhttps://example.test/model?token=secret\n" + liveDashboardURL + "?token=secret\n"))
+	if !strings.Contains(output.String(), safe) || !strings.Contains(output.String(), frozen) || strings.Contains(output.String(), "token=") || strings.Contains(output.String(), "secret") {
+		t.Fatal(&output)
 	}
 }

@@ -262,6 +262,10 @@ func Forward(ctx context.Context, name, namespace, service string, local, remote
 	if err != nil {
 		return err
 	}
+	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", local, health)
+	if previousActive == "active" && matchingForward(previous, namespace, service, local, remote) && forwardHealthy(ctx, endpoint, service) {
+		return nil
+	}
 	previousEnabled, err := capture(ctx, name, `if systemctl --user is-enabled --quiet modelgauge-forward-`+fmt.Sprint(local)+`; then printf enabled; else printf disabled; fi`)
 	if err != nil {
 		return err
@@ -306,7 +310,6 @@ systemctl --user daemon-reload
 	if err := requireForwardPortFree(ctx, local, previousActive == "active"); err != nil {
 		return err
 	}
-	endpoint := fmt.Sprintf("http://127.0.0.1:%d%s", local, health)
 	script := `set -euo pipefail
 mkdir -p "$HOME/.config/systemd/user"
 unit=` + quote(unit) + `
@@ -471,4 +474,21 @@ func forwardHealthy(ctx context.Context, endpoint, service string) bool {
 		return response.Status == "ok" && response.Active != nil
 	}
 	return response.Database == "ok"
+}
+
+// Accept the owned legacy localhost binding as well as an explicit one.
+func matchingForward(unit, namespace, service string, local, remote int) bool {
+	for _, line := range strings.Split(unit, "\n") {
+		if !strings.HasPrefix(line, "ExecStart=") {
+			continue
+		}
+		fields := strings.Fields(strings.TrimPrefix(line, "ExecStart="))
+		if len(fields) == 0 || filepath.Base(fields[0]) != "kubectl" {
+			return false
+		}
+		args := strings.Join(fields[1:], " ")
+		expected := fmt.Sprintf("-n %s port-forward svc/%s %d:%d", namespace, service, local, remote)
+		return args == expected || args == expected+" --address=127.0.0.1"
+	}
+	return false
 }

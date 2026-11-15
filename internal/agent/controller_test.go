@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"strings"
 	"testing"
 )
@@ -49,5 +50,43 @@ func TestWorkerProgressIsAStreamFrame(t *testing.T) {
 	var event workerResponse
 	if err := json.NewDecoder(&out).Decode(&event); err != nil || event.Progress != "stage\n" {
 		t.Fatal(event, err)
+	}
+}
+
+func TestWorkerMeasurementFramesDoNotReplaceFinalOrLeakToLogs(t *testing.T) {
+	var log bytes.Buffer
+	var observations []protocol.Measurement
+	stream := workerStream{log: &log, observe: func(m protocol.Measurement) { observations = append(observations, m) }}
+	frames := "{\"measurement\":{\"case\":\"load\",\"phase\":\"measuring\",\"values\":{\"successful\":1}}}\n{\"measurement\":{}}\n{\"host\":{\"os\":\"linux\"}}\n"
+	for _, b := range []byte(frames) {
+		if _, err := stream.Write([]byte{b}); err != nil {
+			t.Fatal(err)
+		}
+	}
+	response, err := decodeWorkerResponse(stream.final)
+	if err != nil || len(observations) != 2 || observations[0].Values["successful"] != 1 || log.Len() != 0 || response.Host.OS != "linux" {
+		t.Fatal(observations, response, err, &log)
+	}
+}
+
+type heartbeatLog struct {
+	bytes.Buffer
+	heartbeats int
+}
+
+func (w *heartbeatLog) Write(p []byte) (int, error) {
+	if len(p) == 0 {
+		w.heartbeats++
+	}
+	return w.Buffer.Write(p)
+}
+func TestWorkerHeartbeatKeepsForegroundStreamAliveWithoutRepeatingLogs(t *testing.T) {
+	var log heartbeatLog
+	stream := workerStream{log: &log}
+	if _, err := stream.Write([]byte("{\"measurement\":{}}\n")); err != nil {
+		t.Fatal(err)
+	}
+	if log.heartbeats != 1 || log.Len() != 0 || len(stream.final) != 0 {
+		t.Fatal("heartbeat was logged or treated as result", log.heartbeats, &log, stream.final)
 	}
 }

@@ -10,7 +10,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"reflect"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"testing"
 	"time"
@@ -421,4 +423,86 @@ func servingResult(result protocol.Result) *servingReport {
 		return nil
 	}
 	return report
+}
+
+func TestServingObservationsArriveBeforeCompletionAndMatchFinalReport(t *testing.T) {
+	gate := make(chan struct{})
+	var release sync.Once
+	defer release.Do(func() { close(gate) })
+	var count atomic.Int32
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/v1/models" {
+			fmt.Fprint(w, `{}`)
+			return
+		}
+		if count.Add(1) == 2 {
+			select {
+			case <-gate:
+			case <-r.Context().Done():
+				return
+			}
+		}
+		openAIStream(w)
+	}))
+	defer server.Close()
+	plan := servingFixture(server.URL)
+	config := servingConfig(plan)
+	config.RequestTimeout = 15
+	config.Cases[0].Concurrency = 1
+	config.Cases[0].WarmupRequests = 0
+	events := make(chan protocol.Measurement, 32)
+	type outcome struct {
+		result protocol.Result
+		err    error
+	}
+	done := make(chan outcome, 1)
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	dir := filepath.Join(t.TempDir(), "run")
+	go func() {
+		r, _, err := runServingPlan(ctx, servingPlanWithConfig(plan, config), Options{OutputDir: dir, Observe: func(m protocol.Measurement) { events <- m }})
+		done <- outcome{r, err}
+	}()
+	observed := false
+	for !observed {
+		select {
+		case m := <-events:
+			if m.Phase == "measuring" && m.Values["successful"] == 1 {
+				if m.Values["latency_ms_count"] != 1 {
+					t.Fatal(m)
+				}
+				observed = true
+			}
+		case r := <-done:
+			t.Fatal("finished before exposing partial measurements", r)
+		case <-ctx.Done():
+			t.Fatal("no partial measurement", ctx.Err())
+		}
+	}
+	release.Do(func() { close(gate) })
+	var result protocol.Result
+	select {
+	case r := <-done:
+		if r.err != nil {
+			t.Fatal(r.err)
+		}
+		result = r.result
+	case <-ctx.Done():
+		t.Fatal(ctx.Err())
+	}
+	close(events)
+	var final protocol.Measurement
+	for m := range events {
+		if m.Phase == "final" && m.Case == "load" {
+			final = m
+		}
+	}
+	want := servingValues(servingResult(result).Cases[0])
+	want["target_requests"], want["target_duration_seconds"] = 3, 0
+	if final.Values["successful"] != 3 || !reflect.DeepEqual(final.Values, want) {
+		t.Fatal("live final differs from exported result", final.Values, want)
+	}
+	if _, exists := final.Values["output"]; exists {
+		t.Fatal("output text became telemetry")
+	}
 }

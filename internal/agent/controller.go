@@ -27,6 +27,7 @@ type operation struct {
 // shortcut: callers must submit one foreground operation at a time.
 type ControllerExecutor struct {
 	directory string
+	live      controller.LiveMetrics
 	active    atomic.Pointer[operation]
 }
 
@@ -78,7 +79,15 @@ func (e *ControllerExecutor) work(ctx context.Context, node string, request work
 	op := &operation{cancel: cancel, done: make(chan struct{})}
 	e.active.Store(op)
 	defer func() { close(op.done); e.active.CompareAndSwap(op, nil) }()
-	return remoteWork(ctx, Config{SSH: &c, Log: log}, request)
+	config := Config{SSH: &c, Log: log}
+	if request.Operation == "benchmark" || request.Operation == "observe" {
+		config.Observe = e.live.Observe
+	}
+	response, err := remoteWork(ctx, config, request)
+	if ctx.Err() != nil {
+		err = errors.Join(err, ctx.Err())
+	}
+	return response, err
 }
 func (e *ControllerExecutor) Inspect(ctx context.Context, node string) (platform.Host, []controller.NodeModel, error) {
 	r, err := e.work(ctx, node, workerRequest{Operation: "inspect"}, nil)
@@ -89,10 +98,29 @@ func (e *ControllerExecutor) Install(ctx context.Context, node, model, url, sha 
 	return err
 }
 func (e *ControllerExecutor) Benchmark(ctx context.Context, node, run string, p protocol.Plan, log io.Writer) (protocol.Result, error) {
+	e.live.Start(node, p.Model.ID)
 	r, err := e.work(ctx, node, workerRequest{Operation: "benchmark", RunID: run, Plan: &p}, log)
+	state := "completed"
+	if err != nil || r.Result.Status != protocol.RunStatusCompleted {
+		state = "failed"
+	}
+	if ctx.Err() != nil || errors.Is(err, context.Canceled) {
+		state = "cancelled"
+	}
+	e.live.Finish(state)
 	return r.Result, err
 }
-func (e *ControllerExecutor) Active() bool { return e.active.Load() != nil }
+func (e *ControllerExecutor) Observe(ctx context.Context, node string, log io.Writer, duration time.Duration) error {
+	if !e.live.Watch(true) {
+		return errors.New("no finished experiment to observe")
+	}
+	defer e.live.Watch(false)
+	_, err := e.work(ctx, node, workerRequest{Operation: "observe", ObserveMillis: duration.Milliseconds()}, log)
+	return err
+}
+
+func (e *ControllerExecutor) LiveMetrics() string { return e.live.Metrics() }
+func (e *ControllerExecutor) Active() bool        { return e.active.Load() != nil }
 func (e *ControllerExecutor) Pause(node string, force bool) error {
 	if !nodeName.MatchString(node) {
 		return errors.New("invalid node ID")

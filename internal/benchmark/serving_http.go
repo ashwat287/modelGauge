@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"io"
 	"math"
 	"net/http"
@@ -21,8 +22,9 @@ import (
 var errProbeCancelled = errors.New("benchmark cancellation probe")
 
 type servingClient struct {
-	plan servingPlan
-	http *http.Client
+	observe func(protocol.Measurement)
+	plan    servingPlan
+	http    *http.Client
 }
 
 type servingRequest struct {

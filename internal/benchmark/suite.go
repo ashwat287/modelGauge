@@ -217,7 +217,11 @@ func runSuite(ctx context.Context, p protocol.Plan, o Options) (result protocol.
 		o.log(fmt.Sprintf("Stage %d/%d: %s", i+1, len(suite.Stages), planKind(stage)))
 		stage.PlanID = p.PlanID
 		stageOptions := Options{Log: o.Log, RunID: fmt.Sprintf("%s-stage-%d", o.RunID, i+1), OutputDir: filepath.Join(dir, fmt.Sprintf("stage-%02d", i+1))}
+		if o.Observe != nil {
+			stageOptions.Observe = func(m protocol.Measurement) { m.Stage = fmt.Sprint(i + 1); o.Observe(m) }
+		}
 
+		stageOptions.measure("(stage)", "preparing", map[string]float64{"stage_index": float64(i + 1), "stages_total": float64(len(suite.Stages))}, nil)
 		measured, _, err := implementations[planKind(stage)].run(ctx, stage, stageOptions)
 		report.Stages = append(report.Stages, measured)
 		if err != nil {
@@ -233,6 +237,7 @@ func runSuite(ctx context.Context, p protocol.Plan, o Options) (result protocol.
 		if measured.Memory != nil && (result.Memory == nil || measured.Memory.SafeReservationBytes > result.Memory.SafeReservationBytes) {
 			result.Memory = measured.Memory
 		}
+		stageOptions.measure("(stage)", "final", map[string]float64{"stage_index": float64(i + 1), "stages_total": float64(len(suite.Stages))}, nil)
 		// Synchronous module return includes process reaping. Fail closed on leftovers.
 		if err = ensureNodeIdle(ctx); err != nil {
 			return result, dir, err

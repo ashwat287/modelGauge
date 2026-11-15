@@ -6,6 +6,7 @@ import (
 	"net"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 )
@@ -59,5 +60,23 @@ func TestForwardReadinessRejectsUnrelatedHealthAndRedirects(t *testing.T) {
 	defer redirect.Close()
 	if forwardHealthy(context.Background(), redirect.URL, "grafana") {
 		t.Fatal("redirect accepted")
+	}
+}
+
+func TestForwardReuseRequiresExactOwnedTarget(t *testing.T) {
+	unit := "[Service]\nExecStart=/usr/local/bin/kubectl -n monitoring port-forward svc/grafana 3000:3000\n"
+	if !matchingForward(unit, "monitoring", "grafana", 3000, 3000) {
+		t.Fatal("healthy legacy forward cannot be reused")
+	}
+	for _, changed := range []string{
+		strings.Replace(unit, "svc/grafana", "svc/other", 1),
+		strings.Replace(unit, "3000:3000", "3000:9090", 1),
+		strings.Replace(unit, "-n monitoring", "-n other", 1),
+		strings.Replace(unit, "kubectl", "other", 1),
+		strings.Replace(unit, "3000:3000", "3000:3000 --address=0.0.0.0", 1),
+	} {
+		if matchingForward(changed, "monitoring", "grafana", 3000, 3000) {
+			t.Fatal("foreign/mismatched forward reused", changed)
+		}
 	}
 }

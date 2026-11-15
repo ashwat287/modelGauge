@@ -3,7 +3,7 @@
   "title": "ModelGauge \u2014 Infrastructure and Operations",
   "schemaVersion": 39,
   "version": 1,
-  "refresh": "30s",
+  "refresh": "5s",
   "time": {
     "from": "now-1h",
     "to": "now"
@@ -28,7 +28,8 @@
           "expr": "up",
           "legendFormat": "{{job}} {{instance}}"
         }
-      ]
+      ],
+      "description": "Prometheus target reachability: 1 means last scrape succeeded, 0 means it failed. Missing target data is not zero workload or a stopped benchmark."
     },
     {
       "id": 2,
@@ -54,7 +55,9 @@
         "defaults": {
           "unit": "percent"
         }
-      }
+      },
+      "description": "Non-idle CPU percentage averaged across CPUs of each monitored Linux node over 2 minutes. High values show utilization, not necessarily saturation; compare throughput and waiting. Excludes host processes outside the VM.",
+      "maxDataPoints": 400
     },
     {
       "id": 3,
@@ -80,7 +83,9 @@
         "defaults": {
           "unit": "bytes"
         }
-      }
+      },
+      "description": "Linux guest MemAvailable in bytes, an estimate of memory available for new work. Low values suggest pressure; this is not physical laptop headroom.",
+      "maxDataPoints": 400
     },
     {
       "id": 4,
@@ -106,7 +111,9 @@
         "defaults": {
           "unit": "bytes"
         }
-      }
+      },
+      "description": "Free filesystem space in bytes on the monitored Linux root filesystem. Leave room for models, evidence and monitoring retention. Does not measure disk performance.",
+      "maxDataPoints": 400
     },
     {
       "id": 5,
@@ -132,7 +139,9 @@
         "defaults": {
           "unit": "bytes"
         }
-      }
+      },
+      "description": "Guest swap total minus swap free, in bytes. Nonzero usage can be historical; inspect changing swap counters to establish active paging.",
+      "maxDataPoints": 400
     },
     {
       "id": 6,
@@ -152,7 +161,45 @@
         {
           "expr": "modelgauge_active_operation"
         }
-      ]
+      ],
+      "description": "1 means a controller-owned operation is currently executing, including model inspection/installation. 0 means none active. Not a queue size or proof of benchmark throughput."
+    }
+  ],
+  "links": [
+    {
+      "title": "Live experiment",
+      "type": "link",
+      "url": "/d/modelgauge-live",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "title": "Serving detail",
+      "type": "link",
+      "url": "/d/modelgauge-serving",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "title": "Resources",
+      "type": "link",
+      "url": "/d/modelgauge-resources",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "title": "Completed results",
+      "type": "link",
+      "url": "/d/modelgauge-benchmarks",
+      "targetBlank": false,
+      "keepTime": true
+    },
+    {
+      "title": "Infrastructure",
+      "type": "link",
+      "url": "/d/modelgauge-overview",
+      "targetBlank": false,
+      "keepTime": true
     }
   ]
 }

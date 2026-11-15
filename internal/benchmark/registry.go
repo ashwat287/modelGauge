@@ -94,6 +94,10 @@ func Run(ctx context.Context, plan protocol.Plan, options Options) (protocol.Res
 	if err := ensureNodeIdle(ctx); err != nil {
 		return protocol.Result{}, "", err
 	}
+	client := newServingClient(servingPlan{})
+	defer client.close()
+	stop := observeResources(ctx, client, options, "(node)")
+	defer stop()
 	return implementations[planKind(plan)].run(ctx, plan, options)
 }
 

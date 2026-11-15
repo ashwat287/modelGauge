@@ -12,6 +12,7 @@ import (
 	"regexp"
 	"time"
 
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"golang.org/x/crypto/ssh"
 )
 
@@ -90,7 +91,7 @@ func (c SSHConnection) session(ctx context.Context) (*ssh.Session, func(), error
 	return session, func() { stop(); session.Close(); client.Close() }, nil
 }
 
-func (c SSHConnection) work(ctx context.Context, request workerRequest, unit string, log io.Writer) (response workerResponse, resultErr error) {
+func (c SSHConnection) work(ctx context.Context, request workerRequest, unit string, log io.Writer, observe func(protocol.Measurement)) (response workerResponse, resultErr error) {
 	session, finish, err := c.session(ctx)
 	if err != nil {
 		return response, fmt.Errorf("%w: SSH session %s: %v", errWorkerTransport, c.Address, err)
@@ -100,7 +101,7 @@ func (c SSHConnection) work(ctx context.Context, request workerRequest, unit str
 	if err != nil {
 		return response, err
 	}
-	stdout := workerStream{log: log}
+	stdout := workerStream{log: log, observe: observe}
 	var stderr limitedBuffer
 	session.Stdout = &stdout
 	session.Stderr = &stderr

@@ -41,7 +41,9 @@ type llamaBenchResult struct {
 
 // Options controls local artifact naming.
 type Options struct {
-	Log       io.Writer
+	Log io.Writer
+	// Observe may be called concurrently by resource sampling and case execution.
+	Observe   func(protocol.Measurement)
 	RunID     string
 	OutputDir string
 }
@@ -107,13 +109,15 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 		options.log("Direct benchmark: " + benchmarkCase.ID)
 		measuredPath := filepath.Join(outputDir, benchmarkCase.ID+".json")
 
+		options.measure(benchmarkCase.ID, "warming-up", map[string]float64{"threads": float64(benchmarkCase.Threads), "prompt_tokens": float64(benchmarkCase.PromptTokens), "generation_tokens": float64(benchmarkCase.GenerationTokens)}, nil)
 		options.log("Warmup: " + benchmarkCase.ID)
 		warmupPath := filepath.Join(outputDir, benchmarkCase.ID+"-warmup.json")
-		if err := runLlamaBench(ctx, binary, plan, benchmarkCase.Threads, benchmarkCase.PromptTokens, benchmarkCase.GenerationTokens, plan.Defaults.WarmupRepetitions, warmupPath); err != nil {
+		if err := runLlamaBench(ctx, binary, plan, benchmarkCase.Threads, benchmarkCase.PromptTokens, benchmarkCase.GenerationTokens, plan.Defaults.WarmupRepetitions, warmupPath, options); err != nil {
 			return protocol.Result{}, outputDir, fmt.Errorf("warm up %s: %w", benchmarkCase.ID, err)
 		}
 
-		if err := runLlamaBench(ctx, binary, plan, benchmarkCase.Threads, benchmarkCase.PromptTokens, benchmarkCase.GenerationTokens, plan.Defaults.MeasureRepetitions, measuredPath); err != nil {
+		options.measure(benchmarkCase.ID, "measuring", map[string]float64{"threads": float64(benchmarkCase.Threads), "prompt_tokens": float64(benchmarkCase.PromptTokens), "generation_tokens": float64(benchmarkCase.GenerationTokens)}, nil)
+		if err := runLlamaBench(ctx, binary, plan, benchmarkCase.Threads, benchmarkCase.PromptTokens, benchmarkCase.GenerationTokens, plan.Defaults.MeasureRepetitions, measuredPath, options); err != nil {
 			return protocol.Result{}, outputDir, fmt.Errorf("measure %s: %w", benchmarkCase.ID, err)
 		}
 		parsed, err := parseLlamaBench(measuredPath)
@@ -129,13 +133,16 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 			TokensPerSecond:       parsed.AverageTS,
 			TokensPerSecondStddev: parsed.StddevTS,
 		})
+		options.measure(benchmarkCase.ID, "final", numericValues(cases[len(cases)-1]), nil)
 	}
 
+	options.measure(plan.MemoryCase.ID, "measuring", nil, nil)
 	options.log("Measuring peak resident memory")
 	memory, err := runMemoryCase(ctx, binary, plan, outputDir)
 	if err != nil {
 		return protocol.Result{}, outputDir, err
 	}
+	options.measure(plan.MemoryCase.ID, "final", numericValues(memory), nil)
 	postflight, err := snapshot()
 	if err != nil {
 		return protocol.Result{}, outputDir, err
@@ -174,7 +181,7 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 	return result, outputDir, nil
 }
 
-func runLlamaBench(ctx context.Context, binary string, plan protocol.Plan, threads, prompt, generation, repetitions int, outputPath string) error {
+func runLlamaBench(ctx context.Context, binary string, plan protocol.Plan, threads, prompt, generation, repetitions int, outputPath string, options Options) error {
 	output, err := os.OpenFile(outputPath, os.O_CREATE|os.O_TRUNC|os.O_WRONLY, 0o640)
 	if err != nil {
 		return fmt.Errorf("open output: %w", err)
@@ -186,7 +193,15 @@ func runLlamaBench(ctx context.Context, binary string, plan protocol.Plan, threa
 	cmd.Stdout = output
 	var stderr strings.Builder
 	cmd.Stderr = &stderr
-	if err := cmd.Run(); err != nil {
+	if err := cmd.Start(); err != nil {
+		return err
+	}
+	client := newServingClient(servingPlan{LocalPID: cmd.Process.Pid})
+	defer client.close()
+	stop := observeResources(ctx, client, options, "(process)")
+	err = cmd.Wait()
+	stop()
+	if err != nil {
 		return fmt.Errorf("llama-bench: %w: %s", errors.Join(err, ctx.Err()), strings.TrimSpace(stderr.String()))
 	}
 	return nil
@@ -397,5 +412,44 @@ func prepareOutputDir(path string) error {
 func (o Options) log(message string) {
 	if o.Log != nil {
 		fmt.Fprintf(o.Log, "%s %s\n", time.Now().UTC().Format(time.RFC3339Nano), message)
+	}
+}
+
+// Numeric snapshots reuse report fields. Strings, output text and arrays never
+// become metric labels; unavailable values stay absent rather than becoming zero.
+func numericValues(value any) map[string]float64 {
+	data, err := json.Marshal(value)
+	if err != nil {
+		return nil
+	}
+	var object map[string]any
+	if json.Unmarshal(data, &object) != nil {
+		return nil
+	}
+	out := map[string]float64{}
+	var flatten func(string, map[string]any)
+	flatten = func(prefix string, object map[string]any) {
+		for key, value := range object {
+			name := prefix + key
+			switch v := value.(type) {
+			case float64:
+				out[name] = v
+			case bool:
+				if v {
+					out[name] = 1
+				} else {
+					out[name] = 0
+				}
+			case map[string]any:
+				flatten(name+"_", v)
+			}
+		}
+	}
+	flatten("", object)
+	return out
+}
+func (o Options) measure(id, phase string, values map[string]float64, unavailable []string) {
+	if o.Observe != nil {
+		o.Observe(protocol.Measurement{Case: id, Phase: phase, Values: values, Unavailable: unavailable})
 	}
 }

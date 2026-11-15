@@ -1,0 +1,1042 @@
+{
+  "uid": "modelgauge-resources",
+  "title": "ModelGauge \u2014 Resources",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "Live experiment",
+      "type": "link",
+      "url": "/d/modelgauge-live",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Serving detail",
+      "type": "link",
+      "url": "/d/modelgauge-serving",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Resources",
+      "type": "link",
+      "url": "/d/modelgauge-resources",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Completed results",
+      "type": "link",
+      "url": "/d/modelgauge-benchmarks",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Infrastructure",
+      "type": "link",
+      "url": "/d/modelgauge-overview",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "title": "How to read this dashboard",
+      "type": "text",
+      "description": "Resource samples describe the model process or benchmark Linux node as named. Sampling may miss short spikes, and the load generator shares the node. Physical-host sensors may be hidden by Lima. Missing telemetry is unavailable, not zero. **Current samples** update during measurement; aggregate peaks/costs update provisionally, then finalize. After a case ends, current-sample series stop; final aggregates remain. Some statistics include earlier server cases (notably lifetime RSS).",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Resource samples describe the model process or benchmark Linux node as named. Sampling may miss short spikes, and the load generator shares the node. Physical-host sensors may be hidden by Lima. Missing telemetry is unavailable, not zero. **Current samples** update during measurement; aggregate peaks/costs update provisionally, then finalize. Process observation spans cases and ends when the model exits. After the one-minute cooldown, node collection stops and final snapshots remain. Some statistics include earlier server cases (notably lifetime RSS). Resource observation starts before warmup, spans stage transitions and continues after completion for one minute after measurement. Final model results remain fixed; node resources keep updating. The CLI opens a start-anchored time range, preserved by dashboard links."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Current resident and proportional memory",
+      "type": "timeseries",
+      "description": "RSS is process memory currently resident in RAM; PSS apportions shared pages. Compare with node headroom for deployment fit. Neither equals model file size or total VM memory. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_process_(rss|pss)_bytes\"}) and (timestamp(modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_process_(rss|pss)_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_process_(rss|pss)_bytes\"}) and (timestamp(modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_process_(rss|pss)_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 3,
+      "title": "Peak process memory",
+      "type": "timeseries",
+      "description": "Sampled RSS/PSS maxima can miss spikes. Lifetime RSS comes from the OS high-water mark and may include previous cases on the same server. Use headroom rather than treating the observed maximum as a guaranteed limit. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(sampled_peak_rss_bytes|sampled_peak_pss_bytes|process_lifetime_peak_rss_bytes)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(sampled_peak_rss_bytes|sampled_peak_pss_bytes|process_lifetime_peak_rss_bytes)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(sampled_peak_rss_bytes|sampled_peak_pss_bytes|process_lifetime_peak_rss_bytes)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(sampled_peak_rss_bytes|sampled_peak_pss_bytes|process_lifetime_peak_rss_bytes)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 4,
+      "title": "Initial and final resident memory",
+      "type": "timeseries",
+      "description": "RSS at the beginning and end of observation. Retained growth may be caching or allocation; it alone does not establish a leak. Compare repeated equivalent cases. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(initial_rss_bytes|final_rss_bytes)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(initial_rss_bytes|final_rss_bytes)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(initial_rss_bytes|final_rss_bytes)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(initial_rss_bytes|final_rss_bytes)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 5,
+      "title": "Process CPU utilization",
+      "type": "timeseries",
+      "description": "CPU seconds divided by observed wall time \u00d7 100. Roughly 200% is two cores of CPU time. Higher means more CPU consumption, not necessarily better performance; compare throughput and latency. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_average_cpu_percent\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_average_cpu_percent\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_average_cpu_percent\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_average_cpu_percent\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 6,
+      "title": "CPU time and cost per success",
+      "type": "timeseries",
+      "description": "Accumulated process CPU seconds and CPU seconds per successful request. Lower cost at equal quality/latency is more efficient. Cost includes work on unsuccessful/other requests within the observed interval. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_cpu_seconds.*\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_cpu_seconds.*\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_cpu_seconds.*\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_cpu_seconds.*\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 7,
+      "title": "Process storage I/O",
+      "type": "timeseries",
+      "description": "Observed process disk read/write byte deltas. Helps identify model paging/loading or storage pressure. Cached reads may not produce disk I/O; this is not a storage bandwidth benchmark. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_(read|write)_bytes\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_(read|write)_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_(read|write)_bytes\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_(read|write)_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 8,
+      "title": "Page faults and context switches",
+      "type": "timeseries",
+      "description": "Observed counter deltas. Major faults may require disk access, minor faults do not require disk reads. Context switches show scheduling activity, not inherently a performance defect. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_(major_faults|minor_faults|context_switches)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_(major_faults|minor_faults|context_switches)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_(major_faults|minor_faults|context_switches)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_process_(major_faults|minor_faults|context_switches)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 9,
+      "title": "Node memory available and swap used",
+      "type": "timeseries",
+      "description": "Linux guest memory headroom and used swap. Less available RAM suggests pressure. Existing swap alone does not prove current paging; inspect swap counter changes. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_(memory_available|swap_used)_bytes\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_(memory_available|swap_used)_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_(memory_available|swap_used)_bytes\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_(memory_available|swap_used)_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 10,
+      "title": "Node swap counters",
+      "type": "timeseries",
+      "description": "Cumulative Linux guest swapped page counters. Rising counters during a case indicate paging activity; absolute values include earlier activity and are not bytes. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_swap(in|out)_pages\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_swap(in|out)_pages\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_swap(in|out)_pages\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_swap(in|out)_pages\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 11,
+      "title": "CPU frequency",
+      "type": "timeseries",
+      "description": "Average exposed CPU frequency in MHz. Helps correlate throughput changes with clocks. Guest frequency can be unavailable or misleading; this is not a direct throttling diagnosis. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_cpu_frequency_mhz\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_cpu_frequency_mhz\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_cpu_frequency_mhz\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_cpu_frequency_mhz\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 12,
+      "title": "Maximum exposed sensor temperature",
+      "type": "timeseries",
+      "description": "Highest readable hwmon temperature in the node. Higher may accompany load, but the sensor need not be CPU die temperature. Lima often hides physical sensors; missing is not a cold CPU. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_max_sensor_temperature_celsius\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_max_sensor_temperature_celsius\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_max_sensor_temperature_celsius\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_node_max_sensor_temperature_celsius\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 13,
+      "title": "CPU-package energy",
+      "type": "timeseries",
+      "description": "Energy-counter delta across observed CPU packages in joules. Includes other node activity and is not idle-subtracted, process-only, or whole-system power. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_cpu_package_energy_joules\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_cpu_package_energy_joules\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_cpu_package_energy_joules\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_cpu_package_energy_joules\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "joule",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 14,
+      "title": "CPU-package energy per output token",
+      "type": "timeseries",
+      "description": "Observed package joules divided by accounted successful output tokens. Lower means less package energy per token for this workload. Attribution includes background/failed work; unavailable without readable counters and token accounting. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 52,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_cpu_package_joules_per_output_token\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_cpu_package_joules_per_output_token\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_cpu_package_joules_per_output_token\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_cpu_package_joules_per_output_token\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 15,
+      "title": "GPU memory",
+      "type": "timeseries",
+      "description": "NVIDIA device memory used and total, across observed devices. Used memory can include other processes. Default setup is CPU-only; Lima normally exposes no NVIDIA GPU. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 52,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_memory_(used|total)_bytes\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_memory_(used|total)_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_memory_(used|total)_bytes\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_memory_(used|total)_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 16,
+      "title": "GPU utilization",
+      "type": "timeseries",
+      "description": "Maximum observed NVIDIA device utilization percentage. Indicates GPU activity, not model-specific attribution or inference efficiency. Requires nvidia-smi and accessible devices. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 60,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_utilization_percent\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_utilization_percent\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_utilization_percent\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_utilization_percent\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 17,
+      "title": "GPU power",
+      "type": "timeseries",
+      "description": "Summed sampled NVIDIA device power in watts. Includes device/background activity, not just this model. Sampling can miss short spikes. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 60,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_power_watts\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_power_watts\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_power_watts\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_power_watts\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "watt",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 18,
+      "title": "GPU temperature",
+      "type": "timeseries",
+      "description": "Maximum sampled NVIDIA device temperature. Correlate with clocks and throughput; a high reading alone does not prove thermal throttling. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 68,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_temperature_celsius\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_temperature_celsius\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_temperature_celsius\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_temperature_celsius\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "celsius",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 19,
+      "title": "GPU clock",
+      "type": "timeseries",
+      "description": "Maximum sampled NVIDIA SM clock in MHz. Use alongside utilization and throughput; requires accessible NVIDIA telemetry. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 68,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_clock_mhz\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_clock_mhz\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_clock_mhz\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=~\"resource_current_gpu_clock_mhz\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 20,
+      "title": "GPU energy",
+      "type": "timeseries",
+      "description": "Estimated device joules by integrating consecutive GPU power samples. Includes other activity, not process-only energy. Missing samples can make the estimate unavailable. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 76,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_gpu_energy_joules\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_gpu_energy_joules\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_gpu_energy_joules\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_gpu_energy_joules\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "joule",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 21,
+      "title": "GPU energy per output token",
+      "type": "timeseries",
+      "description": "Estimated node GPU joules per accounted successful output token. Lower suggests greater energy efficiency at equivalent workload/quality; not isolated model energy. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 76,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_gpu_joules_per_output_token\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_gpu_joules_per_output_token\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_gpu_joules_per_output_token\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_node_gpu_joules_per_output_token\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 22,
+      "title": "Runtime request queues",
+      "type": "timeseries",
+      "description": "Server-reported requests processing or deferred. Queue gauges are summed across labels. Rising deferred work can explain higher TTFT; this is not exact per-request queue waiting time. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 84,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_server:llamacpp:requests_(processing|deferred)\"}) and (timestamp(modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_server:llamacpp:requests_(processing|deferred)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_server:llamacpp:requests_(processing|deferred)\"}) and (timestamp(modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_server:llamacpp:requests_(processing|deferred)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 23,
+      "title": "Runtime token activity and capacity",
+      "type": "timeseries",
+      "description": "Exposed llama-server token rates, token capacity and decode/slot activity, as identified by measurement labels. Counters/gauges have different meanings and runtime-dependent availability; use request timing to assess user experience. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 84,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_server:llamacpp:(prompt_tokens_seconds|predicted_tokens_seconds|n_tokens_max|n_decode_total|n_busy_slots_per_decode)\"}) and (timestamp(modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_server:llamacpp:(prompt_tokens_seconds|predicted_tokens_seconds|n_tokens_max|n_decode_total|n_busy_slots_per_decode)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_server:llamacpp:(prompt_tokens_seconds|predicted_tokens_seconds|n_tokens_max|n_decode_total|n_busy_slots_per_decode)\"}) and (timestamp(modelgauge_live_value{case=\"(process)\",measurement=~\"resource_current_server:llamacpp:(prompt_tokens_seconds|predicted_tokens_seconds|n_tokens_max|n_decode_total|n_busy_slots_per_decode)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 24,
+      "title": "Resource observation coverage",
+      "type": "timeseries",
+      "description": "Number of resource samples and their observation span in seconds. Short windows and sparse samples weaken peak/energy interpretation. Sampling includes collection overhead. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 92,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(samples|observation_seconds)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(samples|observation_seconds)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(samples|observation_seconds)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_(samples|observation_seconds)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 25,
+      "title": "All sampled resource distributions",
+      "type": "table",
+      "description": "Every published numeric resource observation and its sampled distribution. *_bytes is bytes, *_seconds seconds, *_mhz MHz, *_celsius Celsius, *_joules joules; counters are cumulative unless a delta summary is named. Server field units follow runtime metrics. Current samples are distinct from aggregate means/peaks.",
+      "gridPos": {
+        "x": 12,
+        "y": 92,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"resources_.*|resource_current_.*\"}",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 26,
+      "title": "Unavailable resource measurements",
+      "type": "table",
+      "description": "Readability/hardware/runtime limitations seen during observation. Missing VM sensors are expected. No measurement is fabricated for unsupported hardware; availability notes do not indicate benchmark failure.",
+      "gridPos": {
+        "x": 0,
+        "y": 100,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_unavailable{stage=~\"$stage\",case=~\"$case\"}",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 27,
+      "title": "Current model-process CPU",
+      "description": "CPU time consumed between process observations divided by elapsed wall time, times 100. About 200% represents two cores. Covers warmup and measured work and ends when the owned process exits; missing before a second sample is not zero. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 100,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(process)\",measurement=\"resource_current_process_cpu_percent\"}) and (timestamp(modelgauge_live_value{case=\"(process)\",measurement=\"resource_current_process_cpu_percent\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(process)\",measurement=\"resource_current_process_cpu_percent\"}) and (timestamp(modelgauge_live_value{case=\"(process)\",measurement=\"resource_current_process_cpu_percent\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "{{case}} \u00b7 {{measurement}}",
+          "instant": false
+        }
+      ],
+      "maxDataPoints": 400
+    },
+    {
+      "id": 28,
+      "title": "Benchmark-node CPU across the session",
+      "description": "Linux guest non-idle/non-iowait CPU percentage across all CPUs between samples. Covers warmup, stage transitions and post-benchmark observation. Not model-only attribution; values continue after the model exits until observation stops. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 108,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percent",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=\"resource_current_node_cpu_usage_percent\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=\"resource_current_node_cpu_usage_percent\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=\"resource_current_node_cpu_usage_percent\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=\"resource_current_node_cpu_usage_percent\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "{{case}} \u00b7 {{measurement}}",
+          "instant": false
+        }
+      ],
+      "maxDataPoints": 400
+    },
+    {
+      "id": 29,
+      "title": "Benchmark-node disk available",
+      "description": "Space available on the benchmark Linux node root filesystem, observed throughout the session. Useful for model/evidence capacity planning, not a disk performance benchmark. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 12,
+        "y": 108,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{case=\"(node)\",measurement=\"resource_current_node_disk_available_bytes\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=\"resource_current_node_disk_available_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{case=\"(node)\",measurement=\"resource_current_node_disk_available_bytes\"}) and (timestamp(modelgauge_live_value{case=\"(node)\",measurement=\"resource_current_node_disk_available_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "{{case}} \u00b7 {{measurement}}",
+          "instant": false
+        }
+      ],
+      "maxDataPoints": 400
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "stage",
+        "label": "Stage",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "query_result(modelgauge_live_case_info)",
+          "refId": "StandardVariableQuery"
+        },
+        "regex": "/stage=\"([^\\\"]+)\"/",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "case",
+        "label": "Case",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "query_result(modelgauge_live_case_info{stage=~\"$stage\"})",
+          "refId": "StandardVariableQuery"
+        },
+        "regex": "/case=\"([^\\\"]+)\"/",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  }
+}

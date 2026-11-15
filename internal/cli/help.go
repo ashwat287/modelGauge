@@ -76,7 +76,6 @@ var commandHelp = map[string]string{
 	"benchmark":               "🧪 modelgauge run benchmark.yaml\nOne selected model, one node, ordered benchmark stages. Progress is shown until completion; Ctrl+C stops the operation.\nAvailable profiles: modelgauge benchmark profiles list.",
 	"benchmark profiles list": "🧪 modelgauge benchmark profiles list\nList registered profiles as JSON.",
 	"results":                 "📈 modelgauge results [--experiment NAME] [--json]\nShow the latest completed run by default.\nmodelgauge results recommend --context 512 [--memory-budget-gib 2]\nRecommendations use the selected model and measured node.",
-	"monitoring":              "📈 modelgauge monitoring open\nOpen Grafana using the saved controller connection.",
 	"export":                  "📦 modelgauge export --output DIR [--include-raw] [--experiment NAME]\nExport the latest completed run, with checksums. --node NODE retains the advanced whole-history export.\nOptional Prometheus history: --prometheus-url URL --start RFC3339 --end RFC3339.",
 	"cleanup":                 "🧹 modelgauge cleanup [--dry-run] [--force] [--delete-vms]\nRemove only verified owned files/services. --delete-vms also removes VMs created by ModelGauge.\nActive work blocks cleanup; --force cancels managed work first. Export evidence first.",
 	"version":                 "ℹ️ modelgauge version [--json]\nShow version and optional build identity.",

@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"io"
 	"math"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"sort"
 	"strconv"
 	"strings"
+	"syscall"
 	"time"
 )
 
@@ -24,17 +26,21 @@ type servingSample struct {
 }
 
 type servingSampler struct {
-	client   *servingClient
-	pid      int
-	identity string
-	clock    float64
-	nvidia   string
-	energy   map[string]float64
-	joules   float64
+	processOnly                   bool
+	cpuTotal, cpuIdle, processCPU float64
+	processAt                     time.Time
+	client                        *servingClient
+	pid                           int
+	identity                      string
+	clock                         float64
+	nvidia                        string
+	energy                        map[string]float64
+	joules                        float64
 }
 
 func newServingSampler(client *servingClient) (*servingSampler, error) {
 	s := &servingSampler{client: client, pid: client.plan.LocalPID, energy: map[string]float64{}}
+	s.nvidia, _ = exec.LookPath("nvidia-smi")
 	if s.pid == 0 {
 		return s, nil
 	}
@@ -53,7 +59,6 @@ func newServingSampler(client *servingClient) (*servingSampler, error) {
 	if raw, err := exec.Command("getconf", "CLK_TCK").Output(); err == nil {
 		s.clock, _ = strconv.ParseFloat(strings.TrimSpace(string(raw)), 64)
 	}
-	s.nvidia, _ = exec.LookPath("nvidia-smi")
 	return s, nil
 }
 
@@ -88,36 +93,41 @@ func (s *servingSampler) sample(ctx context.Context) (p servingSample) {
 		}
 		stop()
 	}
-	if s.pid == 0 {
+	if s.pid != 0 {
+		s.sampleProcess(&p)
+	}
+	if s.processOnly {
 		return p
 	}
-	root := fmt.Sprintf("/proc/%d", s.pid)
-	data, err := os.ReadFile(root + "/stat")
-	fields := processFields(string(data))
-	if err != nil || len(fields) < 20 || fields[19] != s.identity {
-		p.Unavailable = append(p.Unavailable, "supplied server PID exited or changed; replacement process is not sampled")
+	if runtime.GOOS != "linux" {
 		return p
 	}
-	for key, index := range map[string]int{"process_minor_faults": 7, "process_major_faults": 9} {
-		if v, ok := parseServingNumber(fields[index]); ok {
-			p.Values[key] = v
-		}
-	}
-	if s.clock > 0 {
-		a, okA := parseServingNumber(fields[11])
-		b, okB := parseServingNumber(fields[12])
-		if okA && okB {
-			p.Values["process_cpu_seconds"] = (a + b) / s.clock
-		}
-	} else {
-		p.Unavailable = append(p.Unavailable, "process CPU clock tick frequency")
-	}
-	readProcValues(root+"/status", map[string]string{"VmRSS": "process_rss_bytes", "VmHWM": "process_lifetime_peak_rss_bytes", "voluntary_ctxt_switches": "process_voluntary_context_switches", "nonvoluntary_ctxt_switches": "process_involuntary_context_switches"}, p.Values)
-	readProcValues(root+"/smaps_rollup", map[string]string{"Pss": "process_pss_bytes"}, p.Values)
-	readProcValues(root+"/io", map[string]string{"read_bytes": "process_read_bytes", "write_bytes": "process_write_bytes"}, p.Values)
-	readProcValues("/proc/meminfo", map[string]string{"MemAvailable": "node_memory_available_bytes", "SwapTotal": "node_swap_total_bytes", "SwapFree": "node_swap_free_bytes"}, p.Values)
+	readProcValues("/proc/meminfo", map[string]string{"MemTotal": "node_memory_total_bytes", "MemAvailable": "node_memory_available_bytes", "SwapTotal": "node_swap_total_bytes", "SwapFree": "node_swap_free_bytes"}, p.Values)
 	if total, ok := p.Values["node_swap_total_bytes"]; ok {
 		p.Values["node_swap_used_bytes"] = total - p.Values["node_swap_free_bytes"]
+	}
+	if raw, err := os.ReadFile("/proc/stat"); err == nil {
+		line, _, _ := strings.Cut(string(raw), "\n")
+		fields := strings.Fields(line)
+		if len(fields) >= 9 {
+			total, idle := 0.0, 0.0
+			for i := 1; i <= 8; i++ {
+				v, _ := parseServingNumber(fields[i])
+				total += v
+				if i == 4 || i == 5 {
+					idle += v
+				}
+			}
+			if total > s.cpuTotal && s.cpuTotal > 0 {
+				p.Values["node_cpu_usage_percent"] = 100 * (1 - (idle-s.cpuIdle)/(total-s.cpuTotal))
+			}
+			s.cpuTotal, s.cpuIdle = total, idle
+		}
+	}
+	var disk syscall.Statfs_t
+	if syscall.Statfs("/", &disk) == nil {
+		p.Values["node_disk_available_bytes"] = float64(disk.Bavail) * float64(disk.Bsize)
+		p.Values["node_disk_total_bytes"] = float64(disk.Blocks) * float64(disk.Bsize)
 	}
 	readProcValues("/proc/vmstat", map[string]string{"pswpin": "node_swapin_pages", "pswpout": "node_swapout_pages"}, p.Values)
 	if freq, ok := averageFiles("/sys/devices/system/cpu/cpu*/cpufreq/scaling_cur_freq"); ok {
@@ -189,6 +199,105 @@ func (s *servingSampler) sample(ctx context.Context) (p servingSample) {
 		p.Unavailable = append(p.Unavailable, "NVIDIA GPU telemetry (nvidia-smi unavailable)")
 	}
 	return p
+}
+
+func (s *servingSampler) sampleProcess(p *servingSample) {
+	root := fmt.Sprintf("/proc/%d", s.pid)
+	data, err := os.ReadFile(root + "/stat")
+	fields := processFields(string(data))
+	if err != nil || len(fields) < 20 || fields[19] != s.identity {
+		p.Unavailable = append(p.Unavailable, "supplied server PID exited or changed; replacement process is not sampled")
+		return
+	}
+	for key, index := range map[string]int{"process_minor_faults": 7, "process_major_faults": 9} {
+		if v, ok := parseServingNumber(fields[index]); ok {
+			p.Values[key] = v
+		}
+	}
+	if s.clock > 0 {
+		a, okA := parseServingNumber(fields[11])
+		b, okB := parseServingNumber(fields[12])
+		if okA && okB {
+			cpu := (a + b) / s.clock
+			now := time.Now()
+			p.Values["process_cpu_seconds"] = cpu
+			if !s.processAt.IsZero() && cpu >= s.processCPU {
+				p.Values["process_cpu_percent"] = (cpu - s.processCPU) / now.Sub(s.processAt).Seconds() * 100
+			}
+			s.processCPU, s.processAt = cpu, now
+		}
+	} else {
+		p.Unavailable = append(p.Unavailable, "process CPU clock tick frequency")
+	}
+	readProcValues(root+"/status", map[string]string{"VmRSS": "process_rss_bytes", "VmHWM": "process_lifetime_peak_rss_bytes", "voluntary_ctxt_switches": "process_voluntary_context_switches", "nonvoluntary_ctxt_switches": "process_involuntary_context_switches"}, p.Values)
+	readProcValues(root+"/smaps_rollup", map[string]string{"Pss": "process_pss_bytes"}, p.Values)
+	readProcValues(root+"/io", map[string]string{"read_bytes": "process_read_bytes", "write_bytes": "process_write_bytes"}, p.Values)
+
+}
+
+// Observation has the experiment/process lifetime, independently of scored cases.
+// Missing sensors never turn an otherwise healthy benchmark into a failed run.
+func observeResources(parent context.Context, client *servingClient, options Options, id string) func() {
+	if options.Observe == nil || runtime.GOOS != "linux" {
+		return func() {}
+	}
+	sampler, err := newServingSampler(client)
+	if err != nil {
+		options.measure(id, "", nil, []string{err.Error()})
+		return func() {}
+	}
+	sampler.processOnly = sampler.pid > 0
+	ctx, cancel := context.WithCancel(parent)
+	done := make(chan struct{})
+	capture := func() {
+		sample := sampler.sample(ctx)
+		values := map[string]float64{}
+		for key, value := range sample.Values {
+			values["resource_current_"+key] = value
+		}
+		if sampler.pid > 0 {
+			values["process_running"] = 0
+			if _, ok := sample.Values["process_rss_bytes"]; ok {
+				values["process_running"] = 1
+			}
+		}
+		options.measure(id, "", values, sample.Unavailable)
+	}
+	capture()
+	go func() {
+		defer close(done)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-ctx.Done():
+				return
+			case <-ticker.C:
+				capture()
+			}
+		}
+	}()
+	return func() {
+		cancel()
+		<-done
+		if sampler.pid > 0 {
+			raw, err := os.ReadFile(fmt.Sprintf("/proc/%d/stat", sampler.pid))
+			fields := processFields(string(raw))
+			if err != nil || len(fields) < 20 || fields[19] != sampler.identity {
+				options.measure(id, "exited", map[string]float64{"process_running": 0}, nil)
+			}
+		}
+	}
+}
+
+// ObserveNode serves the post-benchmark foreground observation over the same SSH interface.
+func ObserveNode(ctx context.Context, observe func(protocol.Measurement)) error {
+	client := newServingClient(servingPlan{})
+	defer client.close()
+	stop := observeResources(ctx, client, Options{Observe: observe}, "(node)")
+	defer stop()
+	<-ctx.Done()
+	return ctx.Err()
 }
 
 func readProcValues(path string, keys map[string]string, out map[string]float64) {

@@ -19,14 +19,16 @@ import (
 
 // workerRequest contains no controller credentials or persistent job state.
 type workerRequest struct {
-	Operation string         `json:"operation"`
-	RunID     string         `json:"run_id,omitempty"`
-	Plan      *protocol.Plan `json:"plan,omitempty"`
-	ModelID   string         `json:"model_id,omitempty"`
-	SourceURL string         `json:"source_url,omitempty"`
-	SHA256    string         `json:"sha256,omitempty"`
+	ObserveMillis int64          `json:"observe_millis,omitempty"`
+	Operation     string         `json:"operation"`
+	RunID         string         `json:"run_id,omitempty"`
+	Plan          *protocol.Plan `json:"plan,omitempty"`
+	ModelID       string         `json:"model_id,omitempty"`
+	SourceURL     string         `json:"source_url,omitempty"`
+	SHA256        string         `json:"sha256,omitempty"`
 }
 type workerResponse struct {
+	Measurement *protocol.Measurement  `json:"measurement,omitempty"`
 	Progress    string                 `json:"progress,omitempty"`
 	Host        platform.Host          `json:"host,omitempty"`
 	Models      []controller.NodeModel `json:"models,omitempty"`
@@ -39,13 +41,15 @@ type Config struct {
 	TargetVM string
 	SSH      *SSHConnection
 	Log      io.Writer
+	Observe  func(protocol.Measurement)
 }
 
 // workerStream forwards progress frames and retains only the final response.
 type workerStream struct {
-	buffer []byte
-	final  []byte
-	log    io.Writer
+	buffer  []byte
+	final   []byte
+	log     io.Writer
+	observe func(protocol.Measurement)
 }
 
 func (s *workerStream) Write(p []byte) (int, error) {
@@ -63,7 +67,18 @@ func (s *workerStream) Write(p []byte) (int, error) {
 		if err := json.Unmarshal(frame, &response); err != nil {
 			return 0, err
 		}
-		if response.Progress != "" {
+		if response.Measurement != nil {
+			if s.observe != nil {
+				s.observe(*response.Measurement)
+			}
+			// A zero-length progress write produces a silent HTTP stream heartbeat.
+			// Keep idle measurement/observation connections alive without terminal spam.
+			if response.Measurement.Case == "" && s.log != nil {
+				if _, err := s.log.Write(nil); err != nil {
+					return 0, err
+				}
+			}
+		} else if response.Progress != "" {
 			if s.log != nil {
 				if _, err := io.WriteString(s.log, response.Progress); err != nil {
 					return 0, err
@@ -92,7 +107,7 @@ func remoteWork(ctx context.Context, c Config, request workerRequest) (workerRes
 	}
 	unit := "modelgauge-worker-" + hex.EncodeToString(random)
 	if c.SSH != nil {
-		return c.SSH.work(ctx, request, unit, c.Log)
+		return c.SSH.work(ctx, request, unit, c.Log, c.Observe)
 	}
 	script := `exec systemd-run --user --quiet --pipe --wait --collect --unit=` + unit + ` --property=KillMode=control-group --property=TimeoutStopSec=5s --property=RuntimeMaxSec=24h -- "$HOME/.local/bin/modelgauge" _guest worker`
 	command := platform.CommandContext(ctx, "limactl", "shell", "--workdir", "/", c.TargetVM, "--", "sh", "-c", script)
@@ -101,7 +116,7 @@ func remoteWork(ctx context.Context, c Config, request workerRequest) (workerRes
 		return response, pipeErr
 	}
 	defer writer.Close()
-	stdout := workerStream{log: c.Log}
+	stdout := workerStream{log: c.Log, observe: c.Observe}
 	var stderr limitedBuffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr

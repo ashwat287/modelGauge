@@ -77,18 +77,48 @@ func runDeclaration(ctx context.Context, command string, args []string, out, std
 		benchmark.Document
 		Model string `json:"model"`
 	}{doc, c.Model}
+	started := time.Now()
+	dashboardReady := false
+	browser := interactiveOutput(out) && !*raw
 	var result controller.Experiment
 	if command == "validate" || preview {
 		_, err = api.DoJSON(ctx, "POST", "/v1/experiments?dry_run=true", "admin", input, &result)
 	} else {
+		if c.VM != "" && strings.TrimRight(*endpoint, "/") == strings.TrimRight(c.ControllerURL, "/") {
+			dashboardCtx, cancel := context.WithTimeout(ctx, 15*time.Second)
+			if dashboardErr := prepareDashboard(dashboardCtx, c, stderr, browser, started); dashboardErr != nil {
+				fmt.Fprintf(stderr, "Dashboard unavailable: %v (benchmark will continue and save results).\n", dashboardErr)
+			} else {
+				dashboardReady = true
+			}
+			cancel()
+		}
 		err = api.StreamJSON(ctx, "/v1/experiments", input, &result, stderr)
 	}
 	if err != nil {
 		fmt.Fprintln(stderr, err)
 		return 1
 	}
+	if dashboardReady {
+		// Allow the final five-second Prometheus scrape before freezing the view.
+		if browser {
+			timer := time.NewTimer(6 * time.Second)
+			select {
+			case <-timer.C:
+			case <-ctx.Done():
+				timer.Stop()
+				return interruptionExit(ctx)
+			}
+		}
+		address := fmt.Sprintf("%s?from=%d&to=%d&refresh=", liveDashboardURL, started.UnixMilli(), time.Now().UnixMilli())
+		fmt.Fprintln(stderr, "Dashboard saved view: "+address)
+		if browser {
+			openDashboard(ctx, address, stderr)
+		}
+	}
 	return printExperiment(out, result, *raw)
 }
+
 func printExperiment(out io.Writer, e controller.Experiment, raw bool) int {
 	if raw {
 		return writeJSON(out, e)

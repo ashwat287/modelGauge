@@ -7,11 +7,13 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"io"
 	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/nerdylucifer/modelgauge/internal/benchmark"
@@ -109,7 +111,25 @@ func runWorker(ctx context.Context, in io.Reader, out io.Writer, authorization t
 			}
 		}
 	}()
-	response := executeWorker(workCtx, request, &workerProgress{out: out})
+	progress := &workerProgress{out: out}
+	heartbeatDone := make(chan struct{})
+	heartbeatCtx, stopHeartbeat := context.WithCancel(workCtx)
+	go func() {
+		defer close(heartbeatDone)
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-heartbeatCtx.Done():
+				return
+			case <-ticker.C:
+				progress.observe(protocol.Measurement{})
+			}
+		}
+	}()
+	response := executeWorker(workCtx, request, progress)
+	stopHeartbeat()
+	<-heartbeatDone
 	response.Interrupted = workCtx.Err() != nil
 	if workCtx.Err() != nil && response.Error != "" && !strings.Contains(response.Error, context.Cause(workCtx).Error()) {
 		response.Error = errors.Join(errors.New(response.Error), context.Cause(workCtx)).Error()
@@ -130,6 +150,21 @@ func executeWorker(ctx context.Context, request workerRequest, progress io.Write
 		response.Host, response.Models, err = inspectLocal(ctx)
 	case "install":
 		_, err = modelcache.InstallContext(ctx, request.ModelID, request.SourceURL, request.SHA256)
+	case "observe":
+		if writer, ok := progress.(*workerProgress); ok {
+			if request.ObserveMillis < 1 || request.ObserveMillis > 3600000 {
+				err = errors.New("observation duration must be 1ms..1h")
+				return
+			}
+			observeCtx, stop := context.WithTimeout(ctx, time.Duration(request.ObserveMillis)*time.Millisecond)
+			err = benchmark.ObserveNode(observeCtx, writer.observe)
+			if observeCtx.Err() == context.DeadlineExceeded && ctx.Err() == nil {
+				err = nil
+			}
+			stop()
+		} else {
+			err = errors.New("observation stream required")
+		}
 	case "benchmark":
 		if request.Plan == nil || !regexp.MustCompile(`^run-[a-zA-Z0-9_-]+$`).MatchString(request.RunID) {
 			err = errors.New("worker requires a plan and safe run ID")
@@ -145,16 +180,31 @@ func executeWorker(ctx context.Context, request workerRequest, progress io.Write
 		}
 		output := filepath.Join(home, ".local/share/modelgauge/results", request.RunID)
 		// The benchmark prepares and validates its directory before opening the log.
-		response.Result, _, err = benchmark.Run(ctx, *request.Plan, benchmark.Options{Log: progress, RunID: request.RunID, OutputDir: output})
+		var observe func(protocol.Measurement)
+		if writer, ok := progress.(*workerProgress); ok {
+			observe = writer.observe
+		}
+		response.Result, _, err = benchmark.Run(ctx, *request.Plan, benchmark.Options{Observe: observe, Log: progress, RunID: request.RunID, OutputDir: output})
 	default:
 		err = fmt.Errorf("unknown worker operation %q", request.Operation)
 	}
 	return
 }
 
-type workerProgress struct{ out io.Writer }
+type workerProgress struct {
+	out io.Writer
+	mu  sync.Mutex
+}
+
+func (w *workerProgress) observe(m protocol.Measurement) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	_ = json.NewEncoder(w.out).Encode(workerResponse{Measurement: &m})
+}
 
 func (w *workerProgress) Write(p []byte) (int, error) {
+	w.mu.Lock()
+	defer w.mu.Unlock()
 	if err := json.NewEncoder(w.out).Encode(workerResponse{Progress: string(p)}); err != nil {
 		return 0, err
 	}

@@ -54,6 +54,7 @@ func TestSuiteRunsSequentiallyAndStopsOnFailure(t *testing.T) {
 				}
 				_ = json.Unmarshal(p.Benchmark.Config, &config)
 				calls = append(calls, config.ID)
+				o.measure(config.ID, "final", map[string]float64{"tokens_per_second": 2}, nil)
 				if config.ID == "second" && secondFails {
 					if mode == "cancel" {
 						cancel()
@@ -80,12 +81,21 @@ func TestSuiteRunsSequentiallyAndStopsOnFailure(t *testing.T) {
 			p.Runtime.Kind = "suite"
 			_ = setConfig(&p, "suite", suitePlan{Stages: []protocol.Plan{first, second, third}})
 			var log bytes.Buffer
-			o := Options{Log: &log, RunID: "run-test", OutputDir: filepath.Join(t.TempDir(), "run")}
+			var live []protocol.Measurement
+			o := Options{Observe: func(m protocol.Measurement) { live = append(live, m) }, Log: &log, RunID: "run-test", OutputDir: filepath.Join(t.TempDir(), "run")}
 			r, _, err := Run(ctx, p, o)
 			if !strings.Contains(log.String(), "Stage 1/3") || !strings.Contains(log.String(), "Stage 2/3") {
 				t.Fatal("stage progress missing", log.String())
 			}
 			if mode == "success" {
+				for _, m := range live {
+					if m.Stage == "" {
+						t.Fatal("suite dropped stage identity", m)
+					}
+				}
+				if len(live) == 0 {
+					t.Fatal("suite dropped live events")
+				}
 				if err != nil || strings.Join(calls, ",") != "first,second,third" || len(r.Cases) != 3 {
 					t.Fatal(r, calls, err)
 				}

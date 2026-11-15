@@ -78,9 +78,10 @@ func nodeFixture(t *testing.T, fail *atomic.Bool, block *atomic.Bool, started ch
 								return
 							}
 							var in struct {
-								Operation string        `json:"operation"`
-								RunID     string        `json:"run_id"`
-								Plan      protocol.Plan `json:"plan"`
+								Operation     string        `json:"operation"`
+								ObserveMillis int64         `json:"observe_millis"`
+								RunID         string        `json:"run_id"`
+								Plan          protocol.Plan `json:"plan"`
 							}
 							if err := json.NewDecoder(channel).Decode(&in); err != nil {
 								return
@@ -91,7 +92,12 @@ func nodeFixture(t *testing.T, fail *atomic.Bool, block *atomic.Bool, started ch
 								encoder.Encode(map[string]any{"host": map[string]any{"os": "linux", "cpus": 2}, "models": []controller.NodeModel{{ID: "model", Path: "/models/model.gguf", SHA256: strings.Repeat("a", 64)}}})
 							case "install":
 								encoder.Encode(map[string]any{})
+							case "observe":
+								encoder.Encode(map[string]any{"measurement": protocol.Measurement{Case: "(node)", Values: map[string]float64{"resource_current_node_memory_available_bytes": 1234}}})
+								time.Sleep(time.Duration(in.ObserveMillis) * time.Millisecond)
+								encoder.Encode(map[string]any{"host": map[string]string{"os": "linux"}})
 							case "benchmark":
+								encoder.Encode(map[string]any{"measurement": protocol.Measurement{Stage: "1", Case: "live-load", Phase: "measuring", Values: map[string]float64{"successful": 2}}})
 								if block.Load() {
 									select {
 									case started <- struct{}{}:
@@ -132,7 +138,9 @@ func TestForegroundFlowFailureAndCancellation(t *testing.T) {
 	var fail, block atomic.Bool
 	started := make(chan struct{}, 1)
 	connection := nodeFixture(t, &fail, &block, started)
-	httpServer := httptest.NewServer(New(store, Config{Executor: executor, AdminToken: "secret"}).Handler())
+	service := New(store, Config{Executor: executor, AdminToken: "secret"})
+	service.cooldown = 25 * time.Millisecond
+	httpServer := httptest.NewServer(service.Handler())
 	defer httpServer.Close()
 	api := &client.Client{BaseURL: httpServer.URL, AdminToken: "secret"}
 	if _, err = api.DoJSON(ctx, "PUT", "/v1/nodes/node/connection", "admin", connection, nil); err != nil {
@@ -162,6 +170,14 @@ func TestForegroundFlowFailureAndCancellation(t *testing.T) {
 	if strings.Count(log.String(), "Benchmark: running") != 1 || !strings.Contains(log.String(), "Stage 2: serving") || !strings.HasSuffix(log.String(), "Benchmark: completed\n") {
 		t.Fatal(&log)
 	}
+
+	if !strings.Contains(log.String(), "Cooldown: running (25ms)") || !strings.Contains(log.String(), "Cooldown: completed") {
+		t.Fatal("automatic cooldown not part of run", &log)
+	}
+	if !strings.Contains(executor.LiveMetrics(), "modelgauge_live_watching 0") || !strings.Contains(executor.LiveMetrics(), `measurement="resource_current_node_memory_available_bytes"} 1234`) {
+		t.Fatal("cooldown did not stop with a retained final snapshot", executor.LiveMetrics())
+	}
+
 	fail.Store(true)
 	if err = api.StreamJSON(ctx, "/v1/experiments", input, &experiment, io.Discard); err == nil {
 		t.Fatal("runtime failure accepted")
@@ -173,6 +189,7 @@ func TestForegroundFlowFailureAndCancellation(t *testing.T) {
 	fail.Store(false)
 	block.Store(true)
 	runCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
 	done := make(chan error, 1)
 	go func() { done <- api.StreamJSON(runCtx, "/v1/experiments", input, &experiment, io.Discard) }()
 	select {
@@ -180,10 +197,22 @@ func TestForegroundFlowFailureAndCancellation(t *testing.T) {
 	case <-time.After(3 * time.Second):
 		t.Fatal("benchmark did not start")
 	}
+	response, metricsErr := httpServer.Client().Get(httpServer.URL + "/metrics")
+	if metricsErr != nil {
+		t.Fatal(metricsErr)
+	}
+	metrics, metricsErr := io.ReadAll(response.Body)
+	response.Body.Close()
+	if metricsErr != nil || !strings.Contains(string(metrics), `case="live-load",measurement="successful"} 2`) || !strings.Contains(string(metrics), `state="running"`) {
+		t.Fatal("measurements not available before completion", string(metrics), metricsErr)
+	}
 	if err = executor.Pause("node", false); err == nil {
 		t.Fatal("ordinary cleanup accepted active work")
 	}
-	cancel()
+	if _, err = api.DoJSON(ctx, "POST", "/v1/cancel", "admin", nil, nil); err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
 	select {
 	case err = <-done:
 		if err == nil {
@@ -191,6 +220,13 @@ func TestForegroundFlowFailureAndCancellation(t *testing.T) {
 		}
 	case <-time.After(5 * time.Second):
 		t.Fatal("worker cancellation did not complete")
+	}
+	deadline := time.Now().Add(time.Second)
+	for !strings.Contains(executor.LiveMetrics(), `state="cancelled"`) && time.Now().Before(deadline) {
+		time.Sleep(time.Millisecond)
+	}
+	if !strings.Contains(executor.LiveMetrics(), `state="cancelled"`) {
+		t.Fatal(executor.LiveMetrics())
 	}
 	if executor.Active() {
 		t.Fatal("worker still active after cancellation")

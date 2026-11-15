@@ -11,6 +11,7 @@ import (
 	"path/filepath"
 	"runtime"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -223,5 +224,37 @@ func TestManagedModelFailureAndBoundedLog(t *testing.T) {
 	info, _ := file.Stat()
 	if info.Size() != 8<<20 {
 		t.Fatal("unbounded runtime log", info.Size())
+	}
+}
+
+func TestManagedProcessResourcesCoverWarmupAndEndAtProcessExit(t *testing.T) {
+	if runtime.GOOS != "linux" {
+		t.Skip("Linux process resource observation")
+	}
+	plan, _ := managedModelFixture(t)
+	var mu sync.Mutex
+	var events []protocol.Measurement
+	observe := func(m protocol.Measurement) { mu.Lock(); defer mu.Unlock(); events = append(events, m) }
+	result, _, err := Run(context.Background(), plan, Options{OutputDir: filepath.Join(t.TempDir(), "run"), Observe: observe})
+	if err != nil {
+		t.Fatal(err)
+	}
+	seenNode, seenProcess, warmCovered, exited := false, false, false, false
+	for _, m := range events {
+		if m.Case == "(node)" && m.Values["resource_current_node_memory_available_bytes"] > 0 {
+			seenNode = true
+		}
+		if m.Case == "(process)" && m.Values["process_running"] == 1 {
+			seenProcess = true
+		}
+		if m.Phase == "warming-up" {
+			warmCovered = seenNode && seenProcess
+		}
+		if m.Case == "(process)" && m.Phase == "exited" && m.Values["process_running"] == 0 {
+			exited = true
+		}
+	}
+	if !warmCovered || !exited || servingResult(result).Cases[0].Successful != 1 {
+		t.Fatal("warmup missing resources, exit not observed, or warmup scored", warmCovered, exited, result)
 	}
 }

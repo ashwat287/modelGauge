@@ -18,7 +18,7 @@ func TestHelpWorksWithoutInfrastructure(t *testing.T) {
 		"setup --help", "run --help", "history --help",
 
 		"results show --help", "results recommend --help",
-		"server --help", "monitoring --help",
+		"server --help",
 	} {
 		t.Run(command, func(t *testing.T) {
 			var out, stderr bytes.Buffer

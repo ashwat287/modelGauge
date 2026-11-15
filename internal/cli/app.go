@@ -44,8 +44,6 @@ func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) int 
 		return runCleanup(ctx, args[1:], stdout, stderr)
 	case "control":
 		return runControl(ctx, args[1:], stdout, stderr)
-	case "monitoring":
-		return runMonitoring(ctx, args[1:], stdout, stderr)
 	case "help", "--help", "-h":
 		printUsage(stdout)
 		return 0
@@ -201,7 +199,6 @@ Usage: modelgauge <command> [options]
   results                     Show the latest completed measurements
   export --output DIR         Export the latest completed run
   history                     List recent experiments
-  monitoring open             Open Grafana
   node reconnect              Refresh the node connection without rebuilding
   cleanup --delete-vms        Remove verified owned resources and created VMs
   version [--json]            Show build identity
@@ -265,6 +262,7 @@ type redactedErrors struct {
 
 var urlUserInfo = regexp.MustCompile(`(https?://)[^/\s@]+@`)
 var urlQuery = regexp.MustCompile(`(https?://[^\s?]+)\?[^\s]+`)
+var dashboardTimeURL = regexp.MustCompile(`^` + regexp.QuoteMeta(liveDashboardURL) + `\?from=[0-9]+&to=(now|[0-9]+)&refresh=(5s)?$`)
 
 func (d *redactedErrors) Write(p []byte) (int, error) {
 	s := string(p)
@@ -274,7 +272,13 @@ func (d *redactedErrors) Write(p []byte) (int, error) {
 		}
 	}
 	s = urlUserInfo.ReplaceAllString(s, "$1[REDACTED]@")
-	s = urlQuery.ReplaceAllString(s, "$1?[REDACTED]")
+	s = urlQuery.ReplaceAllStringFunc(s, func(value string) string {
+		if dashboardTimeURL.MatchString(value) {
+			return value
+		}
+		address, _, _ := strings.Cut(value, "?")
+		return address + "?[REDACTED]"
+	})
 	_, err := io.WriteString(d.target, s)
 	return len(p), err
 }

@@ -71,32 +71,46 @@ func runControl(ctx context.Context, args []string, out, stderr io.Writer) int {
 	return 0
 }
 
-func runMonitoring(ctx context.Context, args []string, out, stderr io.Writer) int {
-	if len(args) != 1 || args[0] != "open" {
-		fmt.Fprintln(stderr, "usage: modelgauge monitoring open")
-		return 2
-	}
-	c, err := control.Load()
-	if err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
-	}
+const liveDashboardURL = "http://127.0.0.1:3000/d/modelgauge-live"
+
+func prepareDashboard(ctx context.Context, c control.Config, out io.Writer, browser bool, since time.Time) error {
 	ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
 	defer cancel()
-	if err = control.Forward(ctx, c.VM, "monitoring", "grafana", 3000, 3000, "/api/health"); err != nil {
-		fmt.Fprintln(stderr, err)
-		return 1
+	if err := control.Forward(ctx, c.VM, "monitoring", "grafana", 3000, 3000, "/api/health"); err != nil {
+		return err
 	}
-	address := "http://127.0.0.1:3000/d/modelgauge-overview"
-	fmt.Fprintln(out, address)
+	address := fmt.Sprintf("%s?from=%d&to=now&refresh=5s", liveDashboardURL, since.UnixMilli())
+	fmt.Fprintln(out, "Dashboard: "+address)
+	if browser {
+		openDashboard(ctx, address, out)
+	}
+	return nil
+}
+
+func openDashboard(ctx context.Context, address string, out io.Writer) {
 	command := "xdg-open"
 	if runtime.GOOS == "darwin" {
 		command = "open"
 	}
 	if path, err := exec.LookPath(command); err == nil {
-		_ = exec.CommandContext(ctx, path, address).Run()
+		if err := exec.CommandContext(ctx, path, address).Run(); err == nil {
+			return
+		}
 	}
-	return 0
+	fmt.Fprintln(out, "Could not open browser; use the dashboard URL above.")
+}
+
+func interactiveOutput(out io.Writer) bool {
+	file, ok := out.(*os.File)
+	if !ok {
+		return false
+	}
+	stat, err := file.Stat()
+	if err != nil || stat.Mode()&os.ModeCharDevice == 0 {
+		return false
+	}
+	input, err := os.Stdin.Stat()
+	return err == nil && input.Mode()&os.ModeCharDevice != 0 && os.Getenv("CI") == ""
 }
 
 // Explicit environment settings continue to override the saved connection.

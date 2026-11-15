@@ -82,12 +82,14 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 
 		resultErr = errors.Join(resultErr, platform.WriteJSON(filepath.Join(outputDir, resultFile), result, 0600))
 	}()
+	stopProcess := func() {}
 	var server *modelServer
 	if serving.Server != nil {
 		if runtime.GOOS != "linux" {
 			return result, outputDir, errors.New("managed model benchmarks execute on the Linux benchmark node; submit this plan through the controller")
 		}
 
+		options.measure("(server)", "preparing", nil, nil)
 		options.log("Starting temporary llama-server")
 		server, err = startModelServer(ctx, plan, serving, outputDir)
 		if err != nil {
@@ -97,6 +99,12 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 			stopped := time.Now()
 			resultErr = errors.Join(resultErr, server.stop())
 			report.ShutdownMS = floatPointer(milliseconds(time.Since(stopped)))
+			stopProcess()
+			values := map[string]float64{"process_shutdown_ms": *report.ShutdownMS, "readiness_wait_ms": report.ReadinessWaitMS}
+			if report.StartupMS != nil {
+				values["process_start_to_ready_ms"] = *report.StartupMS
+			}
+			options.measure("(server)", "final", values, report.Unavailable)
 		}()
 		report.Endpoint, report.Settings = serving.Endpoint, serving.RuntimeSettings
 		report.Warnings = []string{"Measured on the benchmark node: the load generator shares CPU and memory with the model process.", "Stream chunks are not necessarily individual tokens. Process startup includes model loading and runtime initialization, not an isolated cold-disk load."}
@@ -106,7 +114,24 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 	}
 
 	client := newServingClient(*serving)
+	if options.Observe != nil {
+		client.observe = func(m protocol.Measurement) {
+			if serving.Server != nil {
+				if m.Values == nil {
+					m.Values = map[string]float64{}
+				}
+				m.Values["threads"] = float64(serving.Server.Threads)
+			}
+			options.Observe(m)
+		}
+	}
 	defer client.close()
+	if serving.LocalPID > 0 {
+		stopProcess = observeResources(ctx, client, options, "(process)")
+		if server == nil {
+			defer stopProcess()
+		}
+	}
 	readyCtx, cancelReady := context.WithCancel(ctx)
 	defer cancelReady()
 	if server != nil {
@@ -127,6 +152,7 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 	cancelReady()
 	if server != nil {
 		report.StartupMS = floatPointer(milliseconds(time.Since(server.startedAt)))
+		options.measure("(server)", "ready", map[string]float64{"process_start_to_ready_ms": *report.StartupMS, "readiness_wait_ms": report.ReadinessWaitMS}, report.Unavailable)
 		if err = server.running(); err != nil {
 			return result, outputDir, err
 		}
@@ -148,6 +174,16 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 		}
 		measured, err := client.runCase(ctx, spec, outputDir)
 		report.Cases = append(report.Cases, measured)
+		phase := "final"
+		if err != nil {
+			phase = "failed"
+		}
+		values := servingValues(measured)
+		values["target_requests"], values["target_duration_seconds"] = float64(spec.Requests), spec.DurationSeconds
+		if serving.Server != nil {
+			values["threads"] = float64(serving.Server.Threads)
+		}
+		options.measure(spec.ID, phase, values, measured.Resources.Unavailable)
 		if err != nil {
 			return result, outputDir, fmt.Errorf("serving case %s: %w", spec.ID, err)
 		}
@@ -193,6 +229,8 @@ func (w *servingLog) close() error {
 }
 
 func (client *servingClient) runCase(parent context.Context, spec servingCase, dir string) (summary servingCaseResult, resultErr error) {
+	observer := Options{Observe: client.observe}
+	observer.measure(spec.ID, "warming-up", map[string]float64{"concurrency": float64(spec.Concurrency), "target_prompt_tokens": float64(spec.PromptTokens), "max_output_tokens": float64(spec.OutputTokens), "target_requests": float64(spec.Requests), "target_duration_seconds": spec.DurationSeconds}, nil)
 	summary = servingCaseResult{ID: spec.ID, Scenario: spec.Scenario, Concurrency: spec.Concurrency, StartedAt: time.Now().UTC(), Warnings: []string{}}
 	if err := waitServing(parent, seconds(spec.IdleBeforeSeconds)); err != nil {
 		return summary, err
@@ -221,6 +259,7 @@ func (client *servingClient) runCase(parent context.Context, spec servingCase, d
 		if r.Status != "successful" {
 			warmupFailures++
 		}
+		observer.measure(spec.ID, "warming-up", map[string]float64{"warmup_completed": float64(i + 1), "warmup_total": float64(spec.WarmupRequests), "warmup_errors": float64(warmupFailures), "warmup_latency_ms": r.LatencyMS, "concurrency": float64(spec.Concurrency), "target_prompt_tokens": float64(spec.PromptTokens)}, nil)
 		if err = warmup.write(r); err != nil {
 			_ = warmup.close()
 			return summary, err
@@ -256,6 +295,34 @@ func (client *servingClient) runCase(parent context.Context, spec servingCase, d
 	if err = resources.write(initial); err != nil {
 		return summary, err
 	}
+	started := time.Now()
+	startedUTC := started.UTC()
+	var records []servingRequest
+	var mu sync.Mutex
+	var writeErr error
+	var eventCount int
+	lastPublished := time.Time{}
+	publish := func() {
+		if client.observe == nil {
+			return
+		}
+		mu.Lock()
+		partial := summarizeServingCase(spec, client.plan, records, startedUTC, time.Since(started).Seconds(), time.Since(started).Seconds())
+		mu.Unlock()
+		output := partial.OutputTokens
+		if partial.TokenAccounted != partial.Successful {
+			output = 0
+		}
+		partial.Resources = summarizeServingResources(samples, partial.Successful, output)
+		values := servingValues(partial)
+		for key, value := range samples[len(samples)-1].Values {
+			values["resource_current_"+key] = value
+		}
+		values["target_requests"], values["target_duration_seconds"] = float64(spec.Requests), spec.DurationSeconds
+		observer.measure(spec.ID, "measuring", values, partial.Resources.Unavailable)
+		lastPublished = time.Now()
+	}
+	publish()
 	stopSampling := make(chan struct{})
 	samplingDone := make(chan struct{})
 	go func() {
@@ -266,6 +333,9 @@ func (client *servingClient) runCase(parent context.Context, spec servingCase, d
 			if e := resources.write(sample); e != nil {
 				sampleErr = e
 				cancel(e)
+			}
+			if time.Since(lastPublished) >= 5*time.Second {
+				publish()
 			}
 		}
 		ticker := time.NewTicker(seconds(client.plan.SampleInterval))
@@ -282,12 +352,6 @@ func (client *servingClient) runCase(parent context.Context, spec servingCase, d
 			}
 		}
 	}()
-	started := time.Now()
-	startedUTC := started.UTC()
-	var records []servingRequest
-	var mu sync.Mutex
-	var writeErr error
-	var eventCount int
 	record := func(r servingRequest) {
 		mu.Lock()
 		defer mu.Unlock()
@@ -616,4 +680,16 @@ func summarizeServingCase(spec servingCase, plan servingPlan, records []servingR
 		r.Windows = append(r.Windows, w)
 	}
 	return r
+}
+
+// Expose the latest completion window alongside the cumulative case summary.
+// Earlier windows remain in raw evidence; no per-request or per-window labels.
+func servingValues(summary servingCaseResult) map[string]float64 {
+	values := numericValues(summary)
+	if len(summary.Windows) > 0 {
+		for key, value := range numericValues(summary.Windows[len(summary.Windows)-1]) {
+			values["latest_window_"+key] = value
+		}
+	}
+	return values
 }

@@ -104,3 +104,14 @@ type Event struct {
 	Result json.RawMessage `json:"result,omitempty"`
 	Error  string          `json:"error,omitempty"`
 }
+
+// Measurement is a replaceable snapshot for a module-owned case, not a result.
+// Empty case is a heartbeat; empty phase updates background observations without
+// advancing the active case. Values use report field names/units.
+type Measurement struct {
+	Stage       string             `json:"stage,omitempty"`
+	Case        string             `json:"case,omitempty"`
+	Phase       string             `json:"phase,omitempty"`
+	Values      map[string]float64 `json:"values,omitempty"`
+	Unavailable []string           `json:"unavailable,omitempty"`
+}

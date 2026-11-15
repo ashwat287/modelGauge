@@ -1,0 +1,942 @@
+{
+  "uid": "modelgauge-serving",
+  "title": "ModelGauge \u2014 Serving detail",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "Live experiment",
+      "type": "link",
+      "url": "/d/modelgauge-live",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Serving detail",
+      "type": "link",
+      "url": "/d/modelgauge-serving",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Resources",
+      "type": "link",
+      "url": "/d/modelgauge-resources",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Completed results",
+      "type": "link",
+      "url": "/d/modelgauge-benchmarks",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Infrastructure",
+      "type": "link",
+      "url": "/d/modelgauge-overview",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "title": "How to read this dashboard",
+      "type": "text",
+      "description": "Streaming HTTP measurements are collected on the benchmark node against its temporary loopback llama-server. They include local client overhead and server waiting, but not a remote user\u2019s network latency. Successful-request distributions are provisional during measurement; always inspect failures and sample counts. **Tail percentiles from fewer than 100 successes are descriptive, not reliable production p99 estimates.** Choose the case/stage series of interest; earlier cases retain their final observations until another experiment starts.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Streaming HTTP measurements are collected on the benchmark node against its temporary loopback llama-server. They include local client overhead and server waiting, but not a remote user\u2019s network latency. Successful-request distributions are provisional during measurement; always inspect failures and sample counts. **Tail percentiles from fewer than 100 successes are descriptive, not reliable production p99 estimates.** Choose the case/stage series of interest; earlier cases retain their final observations until another experiment starts. Resource observation starts before warmup, spans stage transitions and continues after completion for one minute after measurement. Final model results remain fixed; node resources keep updating. The CLI opens a start-anchored time range, preserved by dashboard links."
+      }
+    },
+    {
+      "id": 2,
+      "title": "End-to-end request latency",
+      "type": "timeseries",
+      "description": "Request dispatch to terminal response. Lower means the complete answer is available sooner. A 2-second TTFT plus 10 seconds of output still gives roughly 12 seconds total; compare equal input/output workloads. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"latency_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"latency_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"latency_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"latency_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 3,
+      "title": "Time to first productive output (TTFT)",
+      "type": "timeseries",
+      "description": "Request dispatch to the first productive streamed event. Lower generally feels more responsive. Includes prompt processing and waiting; does not isolate backend queue time. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"ttft_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"ttft_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"ttft_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"ttft_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 4,
+      "title": "Time to first visible answer",
+      "type": "timeseries",
+      "description": "Request dispatch to the first visible content. It can follow reasoning or other productive events, so it may differ from TTFT. Useful when users care about readable answers rather than internal activity. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"first_answer_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"first_answer_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"first_answer_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"first_answer_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 5,
+      "title": "Time per output token (TPOT)",
+      "type": "timeseries",
+      "description": "Average milliseconds per output token after the first: (last output event \u2212 TTFT)/(output tokens \u2212 1). Lower is faster. 50 ms/token corresponds to roughly 20 tokens/s after startup. Requires valid token accounting. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"tpot_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"tpot_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"tpot_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"tpot_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: ms/token",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 6,
+      "title": "Streaming chunk gaps",
+      "type": "timeseries",
+      "description": "Milliseconds between productive streamed events. Smaller and more consistent gaps mean smoother output. Chunks can contain multiple tokens; these are not token intervals. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"stream_chunk_gap_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"stream_chunk_gap_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"stream_chunk_gap_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"stream_chunk_gap_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 7,
+      "title": "Observed individual token gaps",
+      "type": "timeseries",
+      "description": "Milliseconds between validated individual token events. Smaller means smoother token delivery. Only available when actual token boundaries and reported token totals agree; no estimate is substituted when boundaries are missing. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"observed_token_gap_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"observed_token_gap_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"observed_token_gap_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"observed_token_gap_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 8,
+      "title": "Longest streaming stall",
+      "type": "timeseries",
+      "description": "The largest gap between productive stream events per successful request. A good average can hide a multi-second pause. Excludes time before the first productive event. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"longest_stream_stall_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"longest_stream_stall_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"longest_stream_stall_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"longest_stream_stall_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 9,
+      "title": "Client dispatch delay",
+      "type": "timeseries",
+      "description": "Milliseconds between scheduled arrival and client dispatch, relevant to burst/arrival-rate cases. High delay suggests load-generator scheduling pressure. It does not directly measure the server queue. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"dispatch_delay_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"dispatch_delay_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"dispatch_delay_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"dispatch_delay_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 10,
+      "title": "Scheduled request latency",
+      "type": "timeseries",
+      "description": "Successful request latency plus its client dispatch delay. Represents response time relative to intended arrival, so generator delays are not hidden. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"scheduled_latency_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"scheduled_latency_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"scheduled_latency_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"scheduled_latency_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 11,
+      "title": "Client cancellation acknowledgement",
+      "type": "timeseries",
+      "description": "Milliseconds from the cancellation deadline to the client observing the stream stop. Lower means the caller stops waiting sooner. Does not prove when backend computation or memory reclamation stopped. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"client_cancel_ack_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"client_cancel_ack_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"client_cancel_ack_ms_(mean|p50|p90|p95|p99|max)\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"client_cancel_ack_ms_(mean|p50|p90|p95|p99|max)\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 12,
+      "title": "Latency sample counts",
+      "type": "timeseries",
+      "description": "Number of observations contributing to each distribution, not all offered requests. More observations improve interpretation; p99 from a handful of successes is not a capacity guarantee. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"(latency_ms|ttft_ms|tpot_ms|first_answer_ms)_count\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"(latency_ms|ttft_ms|tpot_ms|first_answer_ms)_count\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"(latency_ms|ttft_ms|tpot_ms|first_answer_ms)_count\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"(latency_ms|ttft_ms|tpot_ms|first_answer_ms)_count\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 13,
+      "title": "Successful requests and goodput",
+      "type": "timeseries",
+      "description": "Completed successful requests per second and successful requests meeting configured targets/output checks per second. Use goodput for latency-constrained capacity; missing goodput means targets were absent or not fully evaluable. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"successful_requests_per_second|goodput_requests_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"successful_requests_per_second|goodput_requests_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"successful_requests_per_second|goodput_requests_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"successful_requests_per_second|goodput_requests_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 14,
+      "title": "Aggregate token throughput",
+      "type": "timeseries",
+      "description": "Accounted successful input/output tokens per elapsed second across all concurrent requests. Higher means more combined capacity, not necessarily faster output for each user. Input rate includes the full request lifecycle. Unavailable unless all successes report token usage. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 52,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"input_tokens_per_second|output_tokens_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"input_tokens_per_second|output_tokens_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"input_tokens_per_second|output_tokens_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"input_tokens_per_second|output_tokens_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 15,
+      "title": "Request outcomes",
+      "type": "timeseries",
+      "description": "Case counts: offered work, dispatched work, successes and outcomes. Timeouts/incomplete responses also contribute to errors, so categories are not all additive. Client-capacity drops are requests never sent, not server rejections. Expected cancellation probes should be interpreted separately. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 52,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"offered|dispatched|successful|errors|timeouts|incomplete|cancelled|client_capacity_drops\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"offered|dispatched|successful|errors|timeouts|incomplete|cancelled|client_capacity_drops\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"offered|dispatched|successful|errors|timeouts|incomplete|cancelled|client_capacity_drops\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"offered|dispatched|successful|errors|timeouts|incomplete|cancelled|client_capacity_drops\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 16,
+      "title": "Output limits and context truncation",
+      "type": "timeseries",
+      "description": "Successful responses reporting output-length caps or truncated context. These help identify cut-off answers and inputs that did not fit. A configured output cap is often intentional; this is not automatically a failure. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 60,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"output_limited|context_truncated\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"output_limited|context_truncated\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"output_limited|context_truncated\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"output_limited|context_truncated\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 17,
+      "title": "Cache accounting",
+      "type": "timeseries",
+      "description": "Requests reporting cache usage, requests with positive cached tokens, and known cached token totals. Compare cache-on/off cases for prefix reuse. Missing accounting cannot establish that caching had no benefit. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 60,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"cache_accounted_requests|cache_hit_requests|known_cached_tokens\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"cache_accounted_requests|cache_hit_requests|known_cached_tokens\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"cache_accounted_requests|cache_hit_requests|known_cached_tokens\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"cache_accounted_requests|cache_hit_requests|known_cached_tokens\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 18,
+      "title": "Output-check pass rate",
+      "type": "timeseries",
+      "description": "Passed checks divided by evaluated prompt checks. Higher is better for these fixtures. The generated format test only checks a small JSON response; this is not general semantic accuracy or reasoning quality. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 68,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"quality_pass_rate\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"quality_pass_rate\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"quality_pass_rate\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"quality_pass_rate\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 19,
+      "title": "Output-check and service-target counts",
+      "type": "timeseries",
+      "description": "Denominators and passing counts for configured output assertions and latency objectives. Check coverage before trusting a pass rate or goodput; unknown token timing can make a target unevaluable. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 68,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"quality_evaluated|quality_passed|slo_evaluated|slo_met\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"quality_evaluated|quality_passed|slo_evaluated|slo_met\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"quality_evaluated|quality_passed|slo_evaluated|slo_met\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"quality_evaluated|quality_passed|slo_evaluated|slo_met\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 20,
+      "title": "Process startup, readiness and shutdown",
+      "type": "timeseries",
+      "description": "Time from owned process launch to ready, and time spent stopping it. Useful for service startup and switching models. Includes loading/runtime initialization, not a controlled cold-disk benchmark. Shutdown is known only after process exit. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 76,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"process_start_to_ready_ms|readiness_wait_ms|process_shutdown_ms\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"process_start_to_ready_ms|readiness_wait_ms|process_shutdown_ms\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"process_start_to_ready_ms|readiness_wait_ms|process_shutdown_ms\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"process_start_to_ready_ms|readiness_wait_ms|process_shutdown_ms\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 21,
+      "title": "First request and follow-up probe",
+      "type": "timeseries",
+      "description": "Latency of the first dispatched request in a case and a follow-up request after burst/cancellation probes. Lower is better. Idle-resume uses an already-loaded server; one probe does not establish full recovery time. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 76,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"first_request_latency_ms|recovery_probe_latency_ms\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"first_request_latency_ms|recovery_probe_latency_ms\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"first_request_latency_ms|recovery_probe_latency_ms\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"first_request_latency_ms|recovery_probe_latency_ms\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 22,
+      "title": "Follow-up probe success",
+      "type": "timeseries",
+      "description": "1 means the post-load/cancellation request succeeded; 0 means it failed. Missing means the case has no probe or it has not run yet. This tests service usability, not benchmark job recovery. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 84,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"recovery_probe_successful\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"recovery_probe_successful\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"recovery_probe_successful\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"recovery_probe_successful\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 23,
+      "title": "All serving observations",
+      "type": "table",
+      "description": "Numeric snapshot details, including min/max/mean/stddev and p50/p90/p95/p99, workload settings and resource fields. Field suffixes carry units. Phase and unavailable details are on the Live experiment dashboard; raw per-request evidence remains in exports.",
+      "gridPos": {
+        "x": 12,
+        "y": 84,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_value{stage=~\"$stage\",case=~\"$case\"}",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 24,
+      "title": "Recent completion-window output rate",
+      "type": "timeseries",
+      "description": "Accounted output tokens in the latest completion bucket divided by bucket duration. This helps reveal sustained-load drift. Requests are grouped by completion, not by the instant tokens were generated; sparse/partial windows can look bursty. Historical window details remain in exports. Provisional until case completion; missing means insufficient accounting or observations. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 92,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}}",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"latest_window_output_tokens_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"latest_window_output_tokens_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"latest_window_output_tokens_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"latest_window_output_tokens_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 25,
+      "title": "Recent completion-window TTFT",
+      "type": "timeseries",
+      "description": "Mean time to first productive output for requests completing in the latest window. Rising values during sustained load suggest worsening responsiveness; this is a completion-bucket mean, not a per-request queue-time measurement. Provisional until case completion; missing means insufficient accounting or observations. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 92,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}}",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"latest_window_mean_ttft_ms\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"latest_window_mean_ttft_ms\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"latest_window_mean_ttft_ms\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"latest_window_mean_ttft_ms\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 26,
+      "title": "Warmup observations",
+      "description": "Warmup request completion/error counts and latest response latency in milliseconds. These observations are separate from scored measurements and may disappear from the current snapshot after the measured phase starts; historical samples remain in Prometheus. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "type": "timeseries",
+      "gridPos": {
+        "x": 0,
+        "y": 100,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{measurement=~\"warmup_.*\"}) and (timestamp(modelgauge_live_value{measurement=~\"warmup_.*\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{measurement=~\"warmup_.*\"}) and (timestamp(modelgauge_live_value{measurement=~\"warmup_.*\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "{{case}} \u00b7 {{measurement}}",
+          "instant": false
+        }
+      ],
+      "maxDataPoints": 400
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "stage",
+        "label": "Stage",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "query_result(modelgauge_live_case_info)",
+          "refId": "StandardVariableQuery"
+        },
+        "regex": "/stage=\"([^\\\"]+)\"/",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "case",
+        "label": "Case",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "query_result(modelgauge_live_case_info{stage=~\"$stage\"})",
+          "refId": "StandardVariableQuery"
+        },
+        "regex": "/case=\"([^\\\"]+)\"/",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  }
+}

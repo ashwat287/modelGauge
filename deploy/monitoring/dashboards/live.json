@@ -1,0 +1,669 @@
+{
+  "uid": "modelgauge-live",
+  "title": "ModelGauge \u2014 Live experiment",
+  "schemaVersion": 39,
+  "version": 1,
+  "refresh": "5s",
+  "time": {
+    "from": "now-30m",
+    "to": "now"
+  },
+  "links": [
+    {
+      "title": "Live experiment",
+      "type": "link",
+      "url": "/d/modelgauge-live",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Serving detail",
+      "type": "link",
+      "url": "/d/modelgauge-serving",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Resources",
+      "type": "link",
+      "url": "/d/modelgauge-resources",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Completed results",
+      "type": "link",
+      "url": "/d/modelgauge-benchmarks",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    },
+    {
+      "title": "Infrastructure",
+      "type": "link",
+      "url": "/d/modelgauge-overview",
+      "targetBlank": false,
+      "includeVars": true,
+      "keepTime": true
+    }
+  ],
+  "panels": [
+    {
+      "id": 1,
+      "title": "How to read this dashboard",
+      "type": "text",
+      "description": "Watch the current experiment here; refresh is every 5 seconds, so changes can take around 10 seconds to appear. **Case phases** distinguish warming-up, measuring, and final observations. Direct llama-bench returns throughput after an invocation ends. Heartbeats show connection freshness even while no measurement is available. Restarting the controller clears this temporary view. Completed history is on the Completed results dashboard. Tables include measurements for cases already observed in this experiment; they are not all the active case.",
+      "gridPos": {
+        "x": 0,
+        "y": 0,
+        "w": 24,
+        "h": 4
+      },
+      "options": {
+        "mode": "markdown",
+        "content": "Watch the current experiment here; refresh is every 5 seconds, so changes can take around 10 seconds to appear. **Case phases** distinguish warming-up, measuring, and final observations. Direct llama-bench returns throughput after an invocation ends. Heartbeats show connection freshness even while no measurement is available. Restarting the controller clears this temporary view. Completed history is on the Completed results dashboard. Tables include measurements for cases already observed in this experiment; they are not all the active case. Resource observation starts before warmup, spans stage transitions and continues after completion for one minute after measurement. Final model results remain fixed; node resources keep updating. The CLI opens a start-anchored time range, preserved by dashboard links."
+      }
+    },
+    {
+      "id": 2,
+      "title": "Experiment, current stage and case",
+      "type": "table",
+      "description": "The selected model/node, current stage/case, and experiment state. State running means execution is in progress; completed, failed and cancelled are terminal. No data means this controller has not started an experiment since startup.",
+      "gridPos": {
+        "x": 0,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_info",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 3,
+      "title": "Case phases",
+      "type": "table",
+      "description": "Each observed case and its phase. Warming-up is excluded from benchmark statistics; measuring values are partial; final values have finished measurement. Earlier final cases remain visible until the next experiment.",
+      "gridPos": {
+        "x": 12,
+        "y": 4,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_case_info{stage=~\"$stage\",case=~\"$case\"}",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 4,
+      "title": "Experiment elapsed time",
+      "type": "stat",
+      "description": "Wall-clock seconds since this experiment started, including preparation and warmups. Stops increasing at completion or interruption. It is not a prediction of remaining runtime.",
+      "gridPos": {
+        "x": 0,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_elapsed_seconds",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "s",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 5,
+      "title": "Connection stale",
+      "type": "stat",
+      "description": "0 means normal freshness or a terminal experiment. 1 means no worker heartbeat for over 15 seconds while running; the view may be stale. This is connection freshness, not measured throughput or job recovery.",
+      "gridPos": {
+        "x": 12,
+        "y": 12,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_stale",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 6,
+      "title": "Last worker contact",
+      "type": "stat",
+      "description": "Last contact with the benchmark or post-completion observation worker. Heartbeats keep this fresh while either foreground session is active; a finished benchmark is not a disconnected Grafana session.",
+      "gridPos": {
+        "x": 0,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_last_contact_seconds * 1000",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 7,
+      "title": "Last measurement received",
+      "type": "stat",
+      "description": "Controller receipt time of the last case snapshot. A long direct llama-bench invocation may be healthy without producing new throughput observations; check worker contact separately.",
+      "gridPos": {
+        "x": 12,
+        "y": 20,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_last_measurement_seconds * 1000",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "dateTimeAsIso",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 8,
+      "title": "Direct throughput (tokens/s)",
+      "type": "timeseries",
+      "description": "Tokens processed/generated per second by llama-bench, separated by case. Higher is faster. Prompt and generation tests are different workloads: 4 generation tokens/s means about 32 seconds for 128 tokens. These update after an invocation completes, not per token. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"tokens_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"tokens_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"tokens_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"tokens_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "suffix: tokens/s",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 9,
+      "title": "Direct throughput relative standard deviation",
+      "type": "timeseries",
+      "description": "Standard deviation divided by mean tokens/s across measured repetitions. Lower means more repeatable observations. 0.10 means 10%; the recommender accepts at most 10%. One sample cannot establish stability; warmups do not establish thermal equilibrium. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 28,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"tokens_per_second_stddev\"} / ignoring(measurement) modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"tokens_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"tokens_per_second_stddev\"} / ignoring(measurement) modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"tokens_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"tokens_per_second_stddev\"} / ignoring(measurement) modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"tokens_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"tokens_per_second_stddev\"} / ignoring(measurement) modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=\"tokens_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "percentunit",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 10,
+      "title": "Memory baseline and reservation",
+      "type": "timeseries",
+      "description": "GNU-time peak resident memory for the separate memory workload, plus the 1.25\u00d7 reservation estimate. A 1.6 GiB peak suggests 2 GiB reservation. This is not concurrent-server capacity or an enforced limit; values arrive after process exit. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"peak_rss_bytes|safe_reservation_bytes\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"peak_rss_bytes|safe_reservation_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"peak_rss_bytes|safe_reservation_bytes\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"peak_rss_bytes|safe_reservation_bytes\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "bytes",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 11,
+      "title": "Serving response times",
+      "type": "timeseries",
+      "description": "P95 total response latency, time to first productive event, and average time per output token (TPOT numerically in ms/token). Lower is usually better. These answer different questions; see Serving detail for individual distributions. Fewer than 100 successes makes tail estimates weak. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 12,
+        "y": 36,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"latency_ms_p95|ttft_ms_p95|tpot_ms_p95\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"latency_ms_p95|ttft_ms_p95|tpot_ms_p95\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"latency_ms_p95|ttft_ms_p95|tpot_ms_p95\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"latency_ms_p95|ttft_ms_p95|tpot_ms_p95\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "ms",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 12,
+      "title": "Serving throughput and goodput",
+      "type": "timeseries",
+      "description": "Successful completed requests per elapsed second versus requests meeting every configured latency target and supplied output check. Higher is better only with acceptable latency/errors. Goodput is unavailable without evaluable targets; 6 qualifying requests in 5 seconds means 1.2 good requests/s. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads. After cooldown, this graph is capped at the collection end; it does not invent new samples from held final values.",
+      "gridPos": {
+        "x": 0,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"successful_requests_per_second|goodput_requests_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"successful_requests_per_second|goodput_requests_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) and (timestamp((modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"successful_requests_per_second|goodput_requests_per_second\"}) and (timestamp(modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"successful_requests_per_second|goodput_requests_per_second\"}) >= scalar(modelgauge_live_started_seconds @ end()))) <= scalar(modelgauge_live_window_end_seconds @ end()))",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": false,
+          "format": "time_series"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "reqps",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "maxDataPoints": 400
+    },
+    {
+      "id": 13,
+      "title": "Workload settings and progress",
+      "type": "table",
+      "description": "Settings and observed request progress. Threads are CPU execution threads; concurrency is simultaneous client requests. Target duration is seconds; counts are requests/tokens as named. This table exposes exact settings rather than an unreliable whole-experiment ETA. Values are provisional while the case is measuring; final when its phase is final. Missing data means not measured yet or unavailable, not zero. Stage/case labels distinguish observations from different workloads.",
+      "gridPos": {
+        "x": 12,
+        "y": 44,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_value{stage=~\"$stage\",case=~\"$case\",measurement=~\"stage_index|stages_total|threads|prompt_tokens|generation_tokens|target_prompt_tokens|max_output_tokens|concurrency|target_requests|target_duration_seconds|offered|dispatched|successful|elapsed_seconds\"}",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 14,
+      "title": "All numeric case observations",
+      "type": "table",
+      "description": "All numeric fields published so far, using the same field names/units as reports: *_ms are milliseconds, *_bytes are bytes, *_seconds are seconds, rates are per second, and counts are counts. Resource distributions are sampled observations. Missing fields are not zero. Filter by case/stage/measurement; use the explained panels for interpretation. Background (node)/(process) observations span warmup and case transitions. Warmup counters and latency use warmup_* fields and are excluded from scored request statistics.",
+      "gridPos": {
+        "x": 0,
+        "y": 52,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_value{stage=~\"$stage\",case=~\"$case\"}",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 15,
+      "title": "Unavailable observations",
+      "type": "table",
+      "description": "Reasons telemetry cannot be observed, such as hidden VM sensors or missing NVIDIA support. A reason is an availability note, not a measured zero or a failed experiment. Some sensors may have been readable during only part of a case.",
+      "gridPos": {
+        "x": 12,
+        "y": 52,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_unavailable{stage=~\"$stage\",case=~\"$case\"}",
+          "legendFormat": "stage {{stage}} \u00b7 {{case}} \u00b7 {{measurement}}",
+          "instant": true,
+          "format": "table"
+        }
+      ],
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      }
+    },
+    {
+      "id": 16,
+      "title": "One-minute cooldown active",
+      "description": "1 means the temporary worker is observing node resources during the fixed one-minute cooldown. 0 means cooldown is inactive or finished. No manual stop is required; completed results and the dashboard persist.",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 60,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_watching",
+          "legendFormat": "{{case}} \u00b7 {{measurement}}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 17,
+      "title": "Benchmark-node scrape health",
+      "description": "1 means Prometheus can scrape the controller that publishes benchmark-node observations. Use worker freshness separately to detect a broken node SSH stream. Grafana may be reachable while its data source is unavailable.",
+      "type": "stat",
+      "gridPos": {
+        "x": 12,
+        "y": 60,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "up{job=\"modelgauge\"}",
+          "legendFormat": "{{case}} \u00b7 {{measurement}}",
+          "instant": true
+        }
+      ]
+    },
+    {
+      "id": 18,
+      "title": "Model process state",
+      "description": "1 means an identified owned model process was observed alive; 0 means that process exited. Process readings cease after exit, while node observation continues. Missing is unknown, not proof of no process.",
+      "type": "stat",
+      "gridPos": {
+        "x": 0,
+        "y": 68,
+        "w": 12,
+        "h": 8
+      },
+      "datasource": {
+        "type": "prometheus",
+        "uid": "prometheus"
+      },
+      "fieldConfig": {
+        "defaults": {
+          "unit": "short",
+          "noValue": "Measuring / unavailable"
+        },
+        "overrides": []
+      },
+      "targets": [
+        {
+          "refId": "A",
+          "expr": "modelgauge_live_value{case=\"(process)\",measurement=\"process_running\"}",
+          "legendFormat": "{{case}} \u00b7 {{measurement}}",
+          "instant": true
+        }
+      ]
+    }
+  ],
+  "templating": {
+    "list": [
+      {
+        "name": "stage",
+        "label": "Stage",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "query_result(modelgauge_live_case_info)",
+          "refId": "StandardVariableQuery"
+        },
+        "regex": "/stage=\"([^\\\"]+)\"/",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      },
+      {
+        "name": "case",
+        "label": "Case",
+        "type": "query",
+        "datasource": {
+          "type": "prometheus",
+          "uid": "prometheus"
+        },
+        "query": {
+          "query": "query_result(modelgauge_live_case_info{stage=~\"$stage\"})",
+          "refId": "StandardVariableQuery"
+        },
+        "regex": "/case=\"([^\\\"]+)\"/",
+        "refresh": 2,
+        "sort": 1,
+        "multi": true,
+        "includeAll": true,
+        "allValue": ".*",
+        "current": {
+          "text": "All",
+          "value": "$__all"
+        },
+        "options": []
+      }
+    ]
+  }
+}

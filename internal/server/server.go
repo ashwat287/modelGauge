@@ -27,13 +27,14 @@ type Config struct {
 	AdminToken string
 }
 type Server struct {
-	store  *controller.Store
-	config Config
-	mux    *http.ServeMux
+	cooldown time.Duration
+	store    *controller.Store
+	config   Config
+	mux      *http.ServeMux
 }
 
 func New(store *controller.Store, config Config) *Server {
-	s := &Server{store: store, config: config, mux: http.NewServeMux()}
+	s := &Server{store: store, config: config, mux: http.NewServeMux(), cooldown: time.Minute}
 	s.routes()
 	return s
 }
@@ -57,6 +58,9 @@ func (s *Server) routes() {
 		}
 		w.Header().Set("Content-Type", "text/plain; version=0.0.4")
 		fmt.Fprint(w, text)
+		if s.config.Executor != nil {
+			fmt.Fprint(w, s.config.Executor.LiveMetrics())
+		}
 		active := 0
 		if s.config.Executor != nil && s.config.Executor.Active() {
 			active = 1
@@ -251,6 +255,15 @@ func (s *Server) experiment(w http.ResponseWriter, r *http.Request) {
 		}
 		record := controller.Record{Document: in.Document, Plan: plan, Result: result}
 		if err = s.store.Save(record); err != nil {
+			return nil, err
+		}
+		if _, err = io.WriteString(log, "Measurements: completed; results saved\nCooldown: running ("+s.cooldown.String()+")"); err != nil {
+			return nil, err
+		}
+		if err = s.config.Executor.Observe(r.Context(), nodes[0].ID, log, s.cooldown); err != nil {
+			return nil, fmt.Errorf("benchmark results saved; cooldown interrupted: %w", err)
+		}
+		if _, err = io.WriteString(log, "Cooldown: completed; live collection stopped"); err != nil {
 			return nil, err
 		}
 		return record.Experiment(), nil
