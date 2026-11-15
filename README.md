@@ -1,184 +1,214 @@
 # 📊 ModelGauge
 
-**Find out how fast an AI model runs on a node, how much memory it uses, and which measured configuration fits.**
+Benchmark GGUF models on a Linux node before deploying them: measure **throughput, request latency, and memory use**, then view results in Grafana or export them.
 
-ModelGauge is one Go executable with a host CLI, a controller with an embedded executor in
-k3s, and temporary workers on measured Linux nodes. It benchmarks GGUF models with CPU-only
-`llama.cpp`, stores results in PostgreSQL, and provisions Prometheus/Grafana.
-Lima provides separate Linux control and benchmark VMs for local use.
+One installed Go executable provides the CLI, controller, and temporary node workers. A workspace has one control VM, one benchmark VM, and one selected model. You can install several models and benchmark them one at a time.
 
-## 🧭 Start here
+**Commands run in the foreground.** There is no application database, job queue, background polling agent, automatic retry, or execution recovery. Run one command at a time; overlapping commands are not protected by execution locks and may interfere.
 
-| I want to… | Read |
+## 🚀 Install from source
+
+Build requirements: **Go 1.23.6+**, **Git**, and **Make**. Running the installed tool requires **Lima** (`limactl` on PATH, virtualization working) and internet access for VM images, guest packages, llama.cpp, container images, and models.
+
+```sh
+git clone https://github.com/ashwat287/modelGauge.git
+cd modelGauge
+
+make build       # Build CLI with embedded Linux ARM64/AMD64 runtimes
+make test        # Run race tests, standalone-binary checks, and go vet
+make install     # Install to ~/.local/bin/modelgauge
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+Keep the PATH export in your shell profile if needed. For another installation directory, use `make install BINDIR=/your/bin`.
+
+After installation, the CLI works from any directory, even if you delete the checkout. Host Go, Git, and Make are no longer needed. Keep your benchmark YAML and exports outside the checkout.
+
+## 🏗️ Prepare the workspace
+
+```sh
+mkdir -p "$HOME/modelgauge-lab"
+cd "$HOME/modelgauge-lab"
+modelgauge setup
+```
+
+`setup` provisions the VMs and services; it is separate from installing the host CLI. It prints progress and waits for completion. Initial setup downloads dependencies and builds pinned CPU-only llama.cpp binaries in the benchmark VM. Docker Desktop is not required.
+
+| Default VM | CPUs | RAM | Disk |
+|---|---:|---:|---:|
+| `modelgauge-control` | 4 | 6 GiB | 50 GiB |
+| `benchmark-node` | 2 | 3 GiB | 30 GiB |
+
+Allow memory for the host OS **in addition to the 9 GiB allocated to VMs**. The default setup is too large for an 8 GiB laptop. For a different allocation:
+
+```sh
+modelgauge setup --control-memory 4 --node-memory 4 --node-cpus 2
+```
+
+Resource flags affect new VMs; they do not resize existing ones. Connection details and scoped ownership records are stored privately under `~/.config/modelgauge/`.
+
+**Existing PostgreSQL-based workspaces:** export anything valuable and clean up using the previous version before installing this version. There is no database-history migration; use fresh VMs for validation.
+
+## 🧪 Install a model and run an experiment
+
+```sh
+modelgauge model search qwen
+modelgauge model install qwen2.5-1.5b-instruct:q4_k_m
+```
+
+Installation downloads to the benchmark node, verifies the checksum, and returns when complete. The progress state is printed once:
+
+```text
+Installation: running
+Installation: completed
+```
+
+The initial catalog provides Qwen2.5 1.5B Instruct Q4_K_M, Q5_K_M, and Q8_0. For another compatible GGUF model:
+
+```sh
+modelgauge model install my-model:q4 --url "$MODEL_URL" --sha256 "$MODEL_SHA256"
+```
+
+Save this workload as `benchmark.yaml` in your working directory:
+
+```yaml
+apiVersion: modelgauge.io/v1alpha1
+kind: Benchmark
+metadata:
+  name: baseline
+spec:
+  threads: [1, 2]
+  contexts: [512]
+  stages:
+    - profile: standard-cpu
+      options:
+        warmups: 3
+        repetitions: 5
+    - profile: node-serving
+      options:
+        warmups: 2
+      config:
+        suite: basic
+        concurrency: [1, 2]
+        requests: 10
+        output_tokens: 128
+```
+
+```sh
+modelgauge validate benchmark.yaml &&
+modelgauge run benchmark.yaml
+```
+
+The YAML describes the workload; the controller resolves the registered node and selected model. `validate` previews it. `run` prints `running` once, shows new phase messages as they occur, and prints `completed` when finished. Errors return a nonzero exit code. There is no status command to poll.
+
+| Profile | Measurements |
 |---|---|
-| Run my first model experiment | [Getting started](docs/GETTING-STARTED.md) |
-| Understand what runs where | [Architecture](docs/ARCHITECTURE.md) |
-| Deploy control and benchmark VMs | [Control bootstrap](docs/deployment/BOOTSTRAP.md) · [Node bootstrap](docs/deployment/NODE-BOOTSTRAP.md) |
-| Look up commands and examples | [CLI reference](docs/CLI.md) |
-| Design a repeatable comparison | [Benchmark methodology](docs/BENCHMARKING.md) |
-| Configure tokens, paths and services | [Configuration](docs/CONFIGURATION.md) |
-| Export metrics and experiment evidence | [Export guide](docs/operations/EXPORT.md) |
-| Remove only owned experiment resources | [Cleanup](docs/operations/CLEANUP.md) |
-| Diagnose failures or preserve data | [Operations](docs/OPERATIONS.md) |
-| Integrate with the controller | [HTTP API](docs/API.md) |
-| Develop or test the project | [Contributing](CONTRIBUTING.md) |
-| See remaining work | [Roadmap](docs/ROADMAP.md) |
-| Package or publish binaries | [Release guide](docs/releases/RELEASING.md) |
+| `standard-cpu` | Prompt throughput at each context/thread setting, generation of 128 tokens, throughput variation across repetitions, and peak RSS in a separate memory workload. |
+| `node-serving` | Temporary model-server startup/shutdown, request latency, time to first token, generation timing, request throughput/outcomes, and available process-resource measurements. |
 
-## ✅ What works today
+For `node-serving`, `suite: deployment` adds sustained load, burst/recovery probes, cache or conversation cases, output-format checks, cancellation, and idle/resume measurements. These are inference tests, not job recovery. Request counts use `config.requests`; `options.repetitions` belongs to direct throughput profiles.
 
-- Create/reuse a Lima control VM running k3s, PostgreSQL, the controller, Prometheus and Grafana.
-- Provision a separate Linux benchmark VM with pinned CPU-only `llama-bench`/`llama-server` runtimes and temporary supervised workers.
-- Resolve catalog models, download checksum-verified GGUF files remotely, and inventory installed models.
-- Declare ordered, multi-model/multi-node experiments in YAML with thread/context matrices.
-- Measure prompt processing, generation throughput and peak resident memory; retain raw evidence on the node.
-- Benchmark installed models on the measured node with a `node-serving` YAML stage: ModelGauge starts a temporary loopback-only model process, measures startup, streaming latency, concurrency/goodput, cache behavior, sustained load, fixture checks and process resources, then stops it. See [node serving benchmarks](docs/BENCHMARKING.md#-serving-benchmarks-on-the-measured-node).
-- Query results and deterministic, evidence-linked thread/memory recommendations.
-- Recover interrupted work using leases, checkpoints and a durable controller-side executor journal; cancel queued or active jobs.
-- Current source builds export results as JSON/CSV, current metrics, optional Prometheus history and verified raw evidence.
-- Current source builds track bootstrap ownership and support scoped cleanup/dry runs; this is not included in v0.1.0.
-- Build macOS/Linux ARM64/AMD64 release artifacts and matching digest-pinned controller metadata.
+For scripts, `run --json` and `model install --json` write their final result to stdout, with progress on stderr. Ctrl+C cancels the foreground request and asks the controller to stop its worker. Connection loss also causes the worker to stop through its keepalive supervision. Interrupted downloads are discarded, interrupted benchmarks do not resume, and the user reruns the operation from the beginning.
 
-**Latest release:** [v0.1.0](https://github.com/ashwat287/modelGauge/releases/tag/v0.1.0).
-The release includes macOS/Linux ARM64/AMD64 executables, checksums, and a public
-multi-architecture controller image pinned by digest. See the
-[installation guide](docs/releases/RELEASING.md) to use a downloaded CLI without Go or
-Docker Desktop on the host. Source development remains documented below.
-The downloaded CLI passed a fresh-VM release validation,
-including model installation, execution, results, recommendation and Grafana data.
-The earlier development VMs have not been migrated automatically.
-
-## 🚀 Quick start from source
-
-Run these commands from the repository root on a host with **Go 1.23 or newer**,
-**Lima**, and internet access. The module may select its declared Go toolchain.
-Use an absolute checkout path with `--source` if you run elsewhere. Docker Desktop
-is not required: development bootstrap imports a locally built OCI image into k3s.
+To compare another installed model:
 
 ```sh
-go build -o bin/modelgauge ./cmd/modelgauge
-export PATH="$PWD/bin:$PATH"
-modelgauge --help
-
-# Separate VMs: control services and measured workload.
-modelgauge control bootstrap --provider lima --source .
-modelgauge node bootstrap --provider lima --name benchmark-node --source .
-modelgauge node status benchmark-node
-
-# The controller now owns execution automatically. Queue the download on the node, rather than on this host.
-modelgauge model install qwen2.5-1.5b-instruct:q4_k_m --node benchmark-node
+modelgauge model list
+modelgauge model use qwen2.5-1.5b-instruct:q4_k_m
+modelgauge run benchmark.yaml
 ```
 
-The install command returns a JSON `job_id`. Use that value in the next command;
-wait for `completed`, then confirm the model appears in inventory:
+## 📈 Results, monitoring, and export
 
 ```sh
-modelgauge model install status JOB_ID
-modelgauge model list --node benchmark-node
-
-# Start small: edit the node/model IDs in the declarative example.
-cp examples/benchmark.yaml benchmark.yaml
-modelgauge validate -f benchmark.yaml
-modelgauge apply -f benchmark.yaml --dry-run
-modelgauge apply -f benchmark.yaml
-modelgauge status -f benchmark.yaml
-modelgauge results show --node benchmark-node
-modelgauge results recommend \
-  --node benchmark-node --model qwen2.5-1.5b-instruct:q4_k_m \
-  --execution-mode lima-linux --context 512 --memory-budget-gib 2
+modelgauge results
+modelgauge results --json
+modelgauge history
+modelgauge results recommend --context 512 --memory-budget-gib 2
 modelgauge monitoring open
+
+modelgauge export --output ./exports/baseline --include-raw
 ```
 
-Poll experiment status until its plans finish before requesting a recommendation.
-`JOB_ID` is a placeholder; never reuse IDs from historical validation records.
-See the [full tutorial](docs/GETTING-STARTED.md) for expectations and troubleshooting.
+Only completed measurements are retained in the controller's persistent files. `results` and `export` use the latest completed run by default; `--experiment NAME` selects completed history. Recommendations use stable measured throughput and a memory margin, not model-quality scores or guaranteed production capacity.
 
-## 🏗️ Architecture at a glance
+Exports contain JSON/CSV measurements, plans/results, current metrics, a manifest, and checksums. `--include-raw` retrieves raw evidence from the benchmark VM. Prometheus time-series history is optional; see `modelgauge export --help` for its URL/time-range flags.
+
+Grafana opens at `http://127.0.0.1:3000`, with username `admin` and a generated password. For the default control VM:
+
+```sh
+limactl shell --workdir / modelgauge-control -- sh -lc '
+  kubectl --kubeconfig "$HOME/.kube/modelgauge-config" \
+    -n monitoring get secret grafana-admin \
+    -o jsonpath="{.data.password}" | base64 --decode
+  printf "\n"
+'
+```
+
+Prometheus collects active-operation/completed-benchmark metrics and configured Linux node-exporter metrics. It does not automatically monitor every macOS host process.
+
+## 🔌 Architecture
 
 ```mermaid
 flowchart LR
-  CLI["Host: modelgauge CLI"] -->|"admin HTTP via local tunnel"| API
-  subgraph Control["Control Linux VM • k3s"]
-    API["Controller / recommender"] --> DB[(PostgreSQL)]
-    PROM[Prometheus] -->|scrape| API
-    GRAF[Grafana] -->|query| PROM
+  CLI[Host CLI] -->|Foreground HTTP stream| C
+  subgraph Control[Control Linux VM · k3s]
+    C[Controller + embedded executor] --> F[Configuration + completed result files]
+    P[Prometheus] -->|Scrape| C
+    G[Grafana] -->|Query| P
   end
-  subgraph Measured["Measured Linux node / Lima VM • outside k3s"]
-    WORKER["Temporary worker"] --> RUN["llama-bench, then temporary llama-server"]
-    WORKER --> CACHE["GGUF cache / local evidence"]
-    EXP["node exporter (optional setup)"]
+  C -->|Pinned SSH · plan and live progress| W
+  subgraph Node[Benchmark Linux VM]
+    W[Temporary supervised worker] --> B[llama-bench]
+    W --> S[Temporary llama-server]
+    E[Installed models + raw evidence]
   end
-  API --> EXEC["Controller: embedded executor"]
-  EXEC -->|"one plan + keepalives over SSH"| WORKER
-  PROM -->|"private network"| EXP
 ```
 
-A **measured node** is the Linux execution environment being characterized.
-The benchmark node does **not** join k3s. The recommender is controller code,
-not a separate service. A VM separates processes and memory allocation, but
-VMs on the same laptop still share physical memory bandwidth, storage and heat.
-For reliable laptop measurements, keep the control plane on your other machine.
+The executor lives inside the controller. A restricted, host-key-pinned SSH command starts the worker, which never calls the controller. The benchmark node needs neither k3s nor a resident agent.
 
-## 💻 Resource planning
+Stages execute in order: `llama-bench` exits before the temporary loopback-only `llama-server` starts. Owned process groups are stopped and reaped on cancellation. Benchmark modules own planning, execution, reports, and metrics; provisioning and transport carry their common plan/result envelopes.
 
-| New VM defaults | vCPUs | RAM | Disk |
-|---|---:|---:|---:|
-| Control plane | 4 | 6 GiB | 50 GiB |
-| Benchmark node | 2 | 3 GiB | 30 GiB |
+No operation is restored after a controller restart. Completed results and configuration remain. Ownership records protect scoped cleanup; they do not resume experiments.
 
-These are allocations, not measured steady usage. Resource flags affect new VMs
-only. Two default VMs need more memory than an 8 GiB laptop can comfortably
-provide alongside its host OS. For your Intel MacBook Air, place the control VM
-on the stronger laptop and budget a benchmark VM conservatively. The current
-bootstrap connects a locally managed Lima target; cross-host enrollment is a
-manual Linux-agent workflow. See [architecture](docs/ARCHITECTURE.md).
+Both VMs share host CPU, memory bandwidth, and thermal limits. Measurements describe the Linux guest, not native macOS performance. Warmups alone do not establish thermal stability; compare repeated runs under similar host load and power conditions.
 
-## 📏 What the numbers mean
+## 🧹 Cleanup and troubleshooting
 
-- **Prompt tokens/s:** throughput for processing a prompt of the recorded length.
-- **Generation tokens/s:** decode throughput for the recorded synthetic workload.
-- **Peak RSS:** the measured process's maximum resident memory, reported in bytes.
-- **Reservation:** peak RSS multiplied by 1.25, rounded upward; a heuristic, not a universal fit guarantee.
-- **Stable case:** standard deviation / average throughput is at most 10% in the current recommender.
+```sh
+modelgauge cleanup --dry-run            # Preview; make no changes
+modelgauge cleanup                      # Refuse known active work
+modelgauge cleanup --force              # Stop owned work, then clean
+modelgauge cleanup --delete-vms         # Delete owned VMs when idle
+modelgauge cleanup --force --delete-vms # Stop owned work and delete created VMs
+```
 
-Warm-up is a fixed number of runs, not a thermal-equilibrium detector. Memory is
-measured for one recorded workload, not every context automatically. Prompt and
-generation tests do not measure answer quality, HTTP latency, or concurrent serving.
-Read [methodology](docs/BENCHMARKING.md) before comparing machines or runtimes.
-The [historical benchmark report](docs/HISTORICAL-BENCHMARKS.md) preserves earlier
-Linux VM measurements and their original evidence.
-
-## 🧰 Repository map
+Cleanup prints plain text by default. For example, after `cleanup --force --delete-vms`:
 
 ```text
-cmd/modelgauge/          executable entry point
-internal/cli/           commands and human help
-internal/control/       Lima bootstrap, images, local forwarding
-internal/agent/         external polling, temporary node workers, recovery
-internal/benchmark/     llama-bench execution and evidence collection
-internal/controller/    PostgreSQL store, queueing, migrations, recommendations
-internal/modelcache/    catalog and checksum-verified downloads
-internal/server/        authenticated HTTP routes
-internal/releases/      matching release resolution and downloads
-internal/platform/      Linux facts, locks, atomic file operations
-pkg/protocol/           versioned shared plan/result contracts
-deploy/                 embedded k3s, monitoring and dashboard assets
-tools/release/          cross-platform binaries and release manifests
-docs/                   usage, architecture and operator guides
-  deployment/           control/node bootstrap and manual k3s deployment
-  operations/           monitoring and job recovery
-  releases/             publishing and validation records
-  HISTORICAL-BENCHMARKS.md archived Linux measurements and source evidence
+modelgauge-control: VM removed.
+benchmark-node: VM removed.
+Cleanup completed.
 ```
 
-## ⚠️ Current boundaries
+Without `--delete-vms`, the summary says that managed files and services were removed and the VM was kept. A dry run starts with `Dry run: no changes made.` and reports planned actions or checks still required. Repeated cleanup reports already-absent VMs or `Nothing to clean.`
 
-Linux is the measured runtime; macOS runs the CLI and hosts Linux through Lima.
-CPU GGUF/llama.cpp is the supported profile. GPU support, model-quality scoring,
-production TLS/enrollment/credential rotation, automatic upgrades, evidence-bundle
-export and general remote cluster lifecycle are future work. Authentication uses
-shared development tokens. Keep this deployment on trusted networks.
+For scripts, request JSON explicitly:
 
-Full history belongs in PostgreSQL; raw files remain on the measured node.
-Monitoring gauges show selected/latest measurements, not a replacement for the
-experiment record. There is no high-availability or automatic backup setup.
+```sh
+modelgauge cleanup --dry-run --json
+```
+
+Normal cleanup returns an error if owned work is active and suggests `--force`. Force stops that work before removing resources; it does not expand the scope of deletion.
+
+Export what you want to keep first. Managed models and evidence can be removed even when VMs are retained. VM deletion removes their entire disks, including completed results and monitoring data. Host exports remain available; reused and untracked VMs are preserved.
+
+Force still checks ownership and guest identity, requires a reachable controller to stop managed work, and does not kill unrelated model processes. `--force --dry-run` is read-only. Activity checks are best-effort: without execution locks, concurrent commands can race and interfere. Do not issue overlapping commands.
+
+For an SSH connection error, fix the VM/network problem, refresh registration, then rerun the failed command:
+
+```sh
+modelgauge node reconnect
+```
+
+Reconnect does not restart a broken VM or resume work. For upgrades, install from a new checkout and rerun `modelgauge setup` while idle. Use `modelgauge --help` and `<command> --help` for command flags.

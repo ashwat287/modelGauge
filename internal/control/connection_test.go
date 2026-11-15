@@ -5,7 +5,6 @@ import (
 	"crypto/ed25519"
 	"crypto/rand"
 	"encoding/json"
-	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -17,7 +16,7 @@ import (
 	"golang.org/x/crypto/ssh"
 )
 
-func TestReconnectUsesCurrentPortAndLeavesModelsAndQueueAlone(t *testing.T) {
+func TestReconnectUsesCurrentPortAndLeavesModelsAlone(t *testing.T) {
 	m, f := fixture(t)
 	prepareTestVM(t, m, f, "node", "benchmark")
 	registry, _ := m.load()
@@ -83,7 +82,7 @@ func TestReconnectUsesCurrentPortAndLeavesModelsAndQueueAlone(t *testing.T) {
 	if err = m.reconnectNode(context.Background(), Config{VM: "control", ControllerURL: api.URL, AdminToken: "admin"}, "node"); err != nil {
 		t.Fatal(err)
 	}
-	if len(actions) != 3 || actions[0] != "POST /v1/nodes/node/connection/pause" || actions[1] != "PUT /v1/nodes/node/connection" {
+	if len(actions) != 2 || actions[0] != "POST /v1/nodes/node/connection/pause" || actions[1] != "PUT /v1/nodes/node/connection" {
 		t.Fatal(actions)
 	}
 	for _, cmd := range commands {
@@ -105,41 +104,6 @@ func TestReconnectUsesCurrentPortAndLeavesModelsAndQueueAlone(t *testing.T) {
 	}
 	if err = m.reconnectNode(context.Background(), Config{VM: "control", ControllerURL: api.URL, AdminToken: "admin"}, "node"); err == nil {
 		t.Fatal("broken SSH path accepted")
-	}
-}
-
-func TestPauseExecutorsPreservesQueuedJobsAndRestoresPartialPause(t *testing.T) {
-	for _, failure := range []bool{false, true} {
-		t.Run(fmt.Sprint(failure), func(t *testing.T) {
-			actions := []string{}
-			api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-				actions = append(actions, r.Method+" "+r.URL.Path)
-				switch {
-				case r.URL.Path == "/v1/nodes":
-					fmt.Fprint(w, `[{"node_id":"a"},{"node_id":"b"}]`)
-				case r.Method == "GET":
-					fmt.Fprint(w, `{"configured":true}`)
-				case failure && strings.Contains(r.URL.Path, "b/connection/pause"):
-					http.Error(w, "pending work", 409)
-				default:
-					w.WriteHeader(200)
-				}
-			}))
-			defer api.Close()
-			nodes, all, err := pauseExecutors(context.Background(), Config{ControllerURL: api.URL, AdminToken: "admin"})
-			if failure {
-				if err == nil || all || actions[len(actions)-1] != "POST /v1/nodes/a/connection/resume" {
-					t.Fatal(nodes, all, err, actions)
-				}
-			} else if err != nil || !all || len(nodes) != 2 {
-				t.Fatal(nodes, all, err)
-			}
-		})
-	}
-	api := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) { http.Error(w, "unavailable", 503) }))
-	defer api.Close()
-	if _, all, err := pauseExecutors(context.Background(), Config{ControllerURL: api.URL}); err != nil || all {
-		t.Fatal("unverified queues allowed", err)
 	}
 }
 
@@ -177,5 +141,19 @@ func TestNewBenchmarkVMHasPersistentSSHPort(t *testing.T) {
 		if args[0] == "create" || args[0] == "delete" {
 			t.Fatal("reuse recreated VM", args)
 		}
+	}
+}
+
+func TestWorkspaceRefusesASecondVMForTheSameRole(t *testing.T) {
+	m, f := fixture(t)
+	prepareTestVM(t, m, f, "control", "control")
+	prepareTestVM(t, m, f, "node", "benchmark")
+	for _, role := range []string{"control", "benchmark"} {
+		if _, _, err := m.provision(context.Background(), "another-"+role, role, 2, 3, 20, 18080, io.Discard); err == nil {
+			t.Fatal("created a second", role)
+		}
+	}
+	if len(f.guests) != 2 {
+		t.Fatal("changed existing workspace")
 	}
 }

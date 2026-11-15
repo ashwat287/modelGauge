@@ -47,22 +47,22 @@ type History struct {
 	Warnings []string `json:"warnings,omitempty"`
 }
 type Manifest struct {
-	SelectedRun        string     `json:"selected_run_id,omitempty"`
-	SchemaVersion      string     `json:"schema_version"`
-	NodeID             string     `json:"node_id"`
-	CreatedAt          time.Time  `json:"created_at"`
-	DatabaseCapturedAt time.Time  `json:"database_captured_at"`
-	MetricsCapturedAt  time.Time  `json:"metrics_captured_at"`
-	ExporterVersion    string     `json:"exporter_version"`
-	MetricsScope       string     `json:"metrics_scope"`
-	RawIncluded        bool       `json:"raw_evidence_included"`
-	RawFileCount       int        `json:"raw_file_count"`
-	Start              *time.Time `json:"history_start,omitempty"`
-	End                *time.Time `json:"history_end,omitempty"`
-	StepSeconds        float64    `json:"history_step_seconds,omitempty"`
-	History            []History  `json:"prometheus_queries,omitempty"`
-	Warnings           []string   `json:"warnings"`
-	Files              []File     `json:"files"`
+	SelectedRun       string     `json:"selected_run_id,omitempty"`
+	SchemaVersion     string     `json:"schema_version"`
+	NodeID            string     `json:"node_id"`
+	CreatedAt         time.Time  `json:"created_at"`
+	ResultsCapturedAt time.Time  `json:"results_captured_at"`
+	MetricsCapturedAt time.Time  `json:"metrics_captured_at"`
+	ExporterVersion   string     `json:"exporter_version"`
+	MetricsScope      string     `json:"metrics_scope"`
+	RawIncluded       bool       `json:"raw_evidence_included"`
+	RawFileCount      int        `json:"raw_file_count"`
+	Start             *time.Time `json:"history_start,omitempty"`
+	End               *time.Time `json:"history_end,omitempty"`
+	StepSeconds       float64    `json:"history_step_seconds,omitempty"`
+	History           []History  `json:"prometheus_queries,omitempty"`
+	Warnings          []string   `json:"warnings"`
+	Files             []File     `json:"files"`
 }
 
 func endpoint(base, path string) (string, error) {
@@ -219,12 +219,12 @@ func Write(ctx context.Context, o Options) (manifest Manifest, err error) {
 	if err = write(o.Output, "INCOMPLETE", []byte("Export did not complete. Do not delete source evidence based on this directory.\n")); err != nil {
 		return manifest, err
 	}
-	manifest = Manifest{SelectedRun: o.RunID, SchemaVersion: "modelgauge-export/v1", NodeID: o.NodeID, CreatedAt: time.Now().UTC(), DatabaseCapturedAt: snapshot.CapturedAt, MetricsCapturedAt: time.Now().UTC(), ExporterVersion: buildinfo.Version, MetricsScope: "controller-wide latest gauges; not historical samples", Warnings: []string{}, Files: []File{}}
+	manifest = Manifest{SelectedRun: o.RunID, SchemaVersion: "modelgauge-export/v1", NodeID: o.NodeID, CreatedAt: time.Now().UTC(), ResultsCapturedAt: snapshot.CapturedAt, MetricsCapturedAt: time.Now().UTC(), ExporterVersion: buildinfo.Version, MetricsScope: "controller-wide latest gauges; not historical samples", Warnings: []string{}, Files: []File{}}
 	for _, section := range []struct {
 		name  string
 		value any
 	}{
-		{"results.json", snapshot.Results}, {"node.json", json.RawMessage(snapshot.Node)}, {"plans.json", snapshot.Plans}, {"runs.json", snapshot.Runs}, {"models.json", snapshot.Models}, {"cases.json", snapshot.Cases}, {"memory.json", snapshot.Memory}, {"host-snapshots.json", snapshot.Snapshots}, {"model-installs.json", snapshot.InstallJobs}, {"stored-recommendations.json", snapshot.Recommendations}, {"artifacts.json", snapshot.Artifacts},
+		{"results.json", snapshot.Results}, {"node.json", json.RawMessage(snapshot.Node)}, {"plans.json", snapshot.Plans}, {"runs.json", snapshot.Runs}, {"artifacts.json", snapshot.Artifacts},
 	} {
 		if err = writeJSON(o.Output, section.name, section.value); err != nil {
 			return manifest, err
@@ -253,17 +253,7 @@ func Write(ctx context.Context, o Options) (manifest Manifest, err error) {
 			return manifest, err
 		}
 	}
-	for _, p := range snapshot.Plans {
-		var plan struct {
-			Status string `json:"status"`
-		}
-		_ = json.Unmarshal(p, &plan)
-		if plan.Status == "running" || plan.Status == "queued" || plan.Status == "leased" {
-			manifest.Warnings = append(manifest.Warnings, "Active/queued plans are included as metadata; final results require a later export.")
-			break
-		}
-	}
-	manifest.Warnings = append(manifest.Warnings, "Database snapshot, controller-wide current metrics and optional history are separate observations, not one global atomic snapshot.")
+	manifest.Warnings = append(manifest.Warnings, "Completed result files, controller-wide current metrics and optional history are separate observations, not one global atomic snapshot.")
 	if o.RawSource != nil {
 		raw := filepath.Join(o.Output, "raw")
 		if err = os.Mkdir(raw, 0700); err != nil {
@@ -349,7 +339,7 @@ func csvText(s string) string {
 }
 func resultsCSV(out io.Writer, results []controller.RunSummary) error {
 	writer := csv.NewWriter(out)
-	if err := writer.Write([]string{"run_id", "plan_id", "node_id", "model_id", "execution_mode", "status", "completed_at", "case_id", "threads", "prompt_tokens", "generation_tokens", "repetitions", "tokens_per_second", "stddev_tokens_per_second", "peak_rss_bytes", "safe_reservation_bytes", "recovered", "invalid_reason"}); err != nil {
+	if err := writer.Write([]string{"run_id", "plan_id", "node_id", "model_id", "execution_mode", "status", "completed_at", "case_id", "threads", "prompt_tokens", "generation_tokens", "repetitions", "tokens_per_second", "stddev_tokens_per_second", "peak_rss_bytes", "safe_reservation_bytes", "invalid_reason"}); err != nil {
 		return err
 	}
 	for _, r := range results {
@@ -374,7 +364,7 @@ func resultsCSV(out io.Writer, results []controller.RunSummary) error {
 			if r.SafeReservationBytes > 0 {
 				reservation = strconv.FormatInt(r.SafeReservationBytes, 10)
 			}
-			fields = append(fields, rss, reservation, strconv.FormatBool(r.Recovered), csvText(r.InvalidReason))
+			fields = append(fields, rss, reservation, csvText(r.InvalidReason))
 			if err := writer.Write(fields); err != nil {
 				return err
 			}

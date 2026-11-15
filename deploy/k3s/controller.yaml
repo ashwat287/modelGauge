@@ -45,38 +45,8 @@ spec:
             - name: executor-data
               mountPath: /var/lib/modelgauge
           env:
-            - name: MODELGAUGE_EXECUTOR_STATE_DIR
+            - name: MODELGAUGE_DATA_DIR
               value: /var/lib/modelgauge
-            - name: DATABASE_HOST
-              valueFrom:
-                secretKeyRef:
-                  name: benchmark-controller-db
-                  key: DATABASE_HOST
-            - name: DATABASE_PORT
-              valueFrom:
-                secretKeyRef:
-                  name: benchmark-controller-db
-                  key: DATABASE_PORT
-            - name: DATABASE_NAME
-              valueFrom:
-                secretKeyRef:
-                  name: benchmark-controller-db
-                  key: DATABASE_NAME
-            - name: DATABASE_USER
-              valueFrom:
-                secretKeyRef:
-                  name: benchmark-controller-db
-                  key: DATABASE_USER
-            - name: DATABASE_PASSWORD
-              valueFrom:
-                secretKeyRef:
-                  name: benchmark-controller-db
-                  key: DATABASE_PASSWORD
-            - name: MODELGAUGE_AGENT_TOKEN
-              valueFrom:
-                secretKeyRef:
-                  name: modelgauge-agent-auth
-                  key: token
             - name: MODELGAUGE_ADMIN_TOKEN
               valueFrom:
                 secretKeyRef:

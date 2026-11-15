@@ -68,100 +68,16 @@ func showRequestedHelp(args []string, out io.Writer) (bool, int) {
 }
 
 var commandHelp = map[string]string{
-	"export": `📦 Export results and metrics before cleanup
-  modelgauge export --node benchmark-node --output exports/experiment
-  modelgauge export --node benchmark-node --output exports/with-raw --include-raw
-  modelgauge export --node benchmark-node --output exports/history \
-    --prometheus-url http://127.0.0.1:9090 \
-    --start 2026-11-07T10:00:00Z --end 2026-11-07T11:00:00Z
-Exports JSON/CSV results, metadata, current controller metrics, manifest and checksums.
-Raw files and Prometheus history are optional; missing requested data fails explicitly.
-Use a new output directory and verify SHA256SUMS before cleanup.
-See docs/operations/EXPORT.md. Use 'export --help' for all flags.`,
-	"cleanup": `🧹 Cleanup — remove only resources with verified ModelGauge ownership
-  modelgauge cleanup --dry-run --delete-vms
-  modelgauge cleanup
-  modelgauge cleanup --delete-vms
-Default cleanup removes tracked guest directories/files and owned user services;
-VMs are kept. --delete-vms also removes only VMs ModelGauge originally created,
-including everything subsequently added to those VM disks. Reused VMs stay.
-Unknown legacy installs are never adopted. Pending/active work blocks cleanup.
-Stopped VMs are not started by a dry run; actual cleanup starts them to verify.
-See docs/operations/CLEANUP.md. Use 'cleanup --help' for flags.`,
-	"model install status": "📦 modelgauge model install status JOB_ID\nQueries one installation job as JSON. Use the returned job_id, not a model ID.\nOptional connection flags: --controller URL and --admin-token TOKEN.",
-	"control": `🏗️ Control plane — k3s, PostgreSQL, controller, Prometheus, Grafana
-  modelgauge control bootstrap --provider lima [--source REPO | --image IMAGE]
-  modelgauge control status
-Development: pass --source . from the repository. Released builds resolve their image.
-Defaults for a new VM: 4 CPUs, 6 GiB RAM, 50 GiB disk; API localhost:18080.
-See docs/deployment/BOOTSTRAP.md. Use 'control bootstrap --help' for all flags.`,
-	"node": `🖥️ Nodes — a measured node runs the benchmark, separately from k3s
-  modelgauge node bootstrap --provider lima --name benchmark-node [--source REPO]
-  modelgauge node list
-  modelgauge node reconnect --name benchmark-node
-  modelgauge node status benchmark-node
-  modelgauge node inspect
-Bootstrap defaults: 2 CPUs, 3 GiB RAM, 30 GiB disk. Execution starts automatically inside the controller. Inspection requires Linux.
-See docs/deployment/NODE-BOOTSTRAP.md. Node list/status return JSON.`,
-	"model": `📦 Models — managed GGUF downloads and installed inventory
-  modelgauge model search qwen2.5
-  modelgauge model install qwen2.5-1.5b-instruct:q4_k_m --node benchmark-node
-  modelgauge model install status JOB_ID
-  modelgauge model install cancel JOB_ID
-  modelgauge model list --node benchmark-node
-Wait for completion and inventory registration before applying a benchmark declaration.
-Omitting --node installs on this machine. See docs/GETTING-STARTED.md.`,
-	"model install": `📦 Install a model
-  modelgauge model install MODEL_ID --node NODE_ID
-  modelgauge model install --id custom-model --url HTTPS_URL --sha256 HASH --node NODE_ID
-  modelgauge model install status JOB_ID
-  modelgauge model install cancel JOB_ID
-Use --node for remote work. The response contains the job_id; poll status until completed.
-Use 'model install --help' for the flag defaults.`,
-	"benchmark": `🧪 Declare experiments in YAML
-  modelgauge benchmark profiles list
-  modelgauge validate -f benchmark.yaml
-  modelgauge apply -f benchmark.yaml --dry-run
-  modelgauge apply -f benchmark.yaml
-  modelgauge status -f benchmark.yaml
-  modelgauge cancel -f benchmark.yaml
-Each named experiment is immutable. Reapply the same file to recover its existing jobs.
-Use a new metadata.name for a new measurement. Models must already be installed.
-See examples/benchmark.yaml and docs/BENCHMARKING.md.
-Low-level JSON plan run/submit/cancel and historical campaign status remain available.`,
-	"benchmark campaign": `📋 Historical campaign status
-  modelgauge benchmark campaign status --file campaign/campaign.json
-Campaign creation was replaced by modelgauge apply -f benchmark.yaml.`,
-	"benchmark plan": `📋 Benchmark declaration
-Use modelgauge apply -f benchmark.yaml; flag-based plan creation has been retired.
-Low-level JSON plans remain readable with modelgauge plan validate FILE.`,
-	"benchmark profiles":      "🧪 Profiles\n  modelgauge benchmark profiles list\nProfiles come from registered benchmark modules.\ndeployment: ordered direct + serving stages. standard-cpu: direct throughput/RSS. node-serving: node-local model requests and resources.",
-	"benchmark profiles list": "🧪 Profiles\n  modelgauge benchmark profiles list\nReturns a JSON array of available profile names.",
-	"plan":                    "📋 Plan templates\n  modelgauge plan example > plan.json\n  modelgauge plan validate plan.json\nReplace template node ID, model ID and model path before execution.",
-	"plan example":            "📋 modelgauge plan example\nWrites a JSON template to stdout. Redirect it to a file and edit before running.",
-	"plan validate":           "✅ modelgauge plan validate FILE\nValidates schema and case structure without running a model or proving file availability.",
-	"results": `📈 Results — stored evidence and deterministic recommendations
-  modelgauge results show --node benchmark-node
-  modelgauge results recommend --node benchmark-node --model qwen2.5-1.5b-instruct:q4_k_m \
-    --execution-mode lima-linux --context 512 --memory-budget-gib 2
-Both commands return JSON. Recommendations require completed stable measurements
-for the requested context. A memory budget is usable workload RAM, not host total RAM.`,
-	"monitoring":      "📈 Monitoring\n  modelgauge monitoring open\nForwards Grafana to localhost:3000 and opens the ModelGauge overview.\nUsername: admin. Read the generated password using docs/operations/MONITORING.md.",
-	"monitoring open": "📈 modelgauge monitoring open\nUses the saved control connection to forward Grafana and open its overview dashboard.",
-	"agent": `⚙️ Linux agent — install and supervise on the measured node
-  modelgauge agent install --controller URL --node NODE_ID --execution-mode native-isolated
-  modelgauge agent status
-  modelgauge agent run [--once] [--interval 30s]
-  modelgauge agent uninstall
-Install reads MODELGAUGE_AGENT_TOKEN and writes a private environment file.
-Run reads configuration from environment; a systemd service loads the installed file.
-See docs/CONFIGURATION.md. Use 'agent install --help' or 'agent run --help' for flags.`,
-	"agent status":    "⚙️ modelgauge agent status\nPrints Linux systemd user service status as JSON without exposing credentials.",
-	"agent uninstall": "⚙️ modelgauge agent uninstall\nStops and removes the Linux user service; retains configuration and benchmark evidence.",
-	"node list":       "🖥️ modelgauge node list\nLists registered nodes as JSON using the saved or environment controller connection.",
-	"control status":  "🏗️ modelgauge control status\nReports cluster nodes, deployments and persistent storage using the saved control VM.",
-	"node status":     "🖥️ modelgauge node status NODE_ID\nPrints controller-observed node state, last contact and hardware as JSON.",
-	"node inspect":    "🖥️ modelgauge node inspect\nPrints this Linux machine's hostname, architecture, CPU count and memory as JSON.",
-	"model search":    "📦 modelgauge model search [QUERY]\nFetches metadata for matching entries in the built-in Hugging Face GGUF catalog. Requires network access.",
-	"version":         "ℹ️ modelgauge version [--json]\nPlain output is the version string; --json adds commit, repository, build date, OS and architecture.",
+	"model":                   "📦 Models\n  modelgauge model search QUERY\n  modelgauge model install MODEL\n  modelgauge model use MODEL\n  modelgauge model list\nDownloads happen on the workspace node. Install selects the model; use selects an installed model.",
+	"model install":           "📦 modelgauge model install MODEL [--url HTTPS_URL --sha256 HASH]\nDownloads and selects a model, streams progress, and waits for completion. Ctrl+C requests cancellation; no job ID is needed.",
+	"node":                    "🖥️ One benchmark node\n  modelgauge node reconnect\n  modelgauge node bootstrap\n  modelgauge node inspect\nThe workspace owns one benchmark node, separate from k3s.",
+	"node inspect":            "🖥️ modelgauge node inspect\nInspect this Linux machine as JSON.",
+	"control":                 "🏗️ One control plane\n  modelgauge setup\n  modelgauge control bootstrap\nExisting VM resources are reused, not resized.",
+	"benchmark":               "🧪 modelgauge run benchmark.yaml\nOne selected model, one node, ordered benchmark stages. Progress is shown until completion; Ctrl+C stops the operation.\nAvailable profiles: modelgauge benchmark profiles list.",
+	"benchmark profiles list": "🧪 modelgauge benchmark profiles list\nList registered profiles as JSON.",
+	"results":                 "📈 modelgauge results [--experiment NAME] [--json]\nShow the latest completed run by default.\nmodelgauge results recommend --context 512 [--memory-budget-gib 2]\nRecommendations use the selected model and measured node.",
+	"monitoring":              "📈 modelgauge monitoring open\nOpen Grafana using the saved controller connection.",
+	"export":                  "📦 modelgauge export --output DIR [--include-raw] [--experiment NAME]\nExport the latest completed run, with checksums. --node NODE retains the advanced whole-history export.\nOptional Prometheus history: --prometheus-url URL --start RFC3339 --end RFC3339.",
+	"cleanup":                 "🧹 modelgauge cleanup [--dry-run] [--force] [--delete-vms]\nRemove only verified owned files/services. --delete-vms also removes VMs created by ModelGauge.\nActive work blocks cleanup; --force cancels managed work first. Export evidence first.",
+	"version":                 "ℹ️ modelgauge version [--json]\nShow version and optional build identity.",
 }

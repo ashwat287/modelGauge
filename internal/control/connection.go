@@ -7,12 +7,10 @@ import (
 	"crypto/rand"
 	"crypto/x509"
 	"encoding/pem"
-	"errors"
 	"fmt"
 	"net"
 	"strconv"
 	"strings"
-	"time"
 
 	"golang.org/x/crypto/ssh"
 
@@ -110,36 +108,11 @@ func (m *ownershipManager) enrollControllerExecutor(ctx context.Context, c Confi
 	}
 	connection.PrivateKey = string(pem.EncodeToMemory(&pem.Block{Type: "PRIVATE KEY", Bytes: encoded}))
 	api := &client.Client{BaseURL: c.ControllerURL, AdminToken: c.AdminToken}
-	enrolled := time.Now().UTC()
 	if _, err = api.DoJSON(ctx, "PUT", "/v1/nodes/"+node+"/connection", "admin", connection, nil); err != nil {
 		return err
 	}
-	var lastError string
-	for attempt := 0; attempt < 45; attempt++ {
-		var status struct {
-			Status     string     `json:"status"`
-			LastSeenAt *time.Time `json:"last_seen_at"`
-			Executor   struct {
-				LastError string `json:"last_error"`
-			} `json:"executor"`
-		}
-		_, err = api.DoJSON(ctx, "GET", "/v1/nodes/"+node, "admin", nil, &status)
-		if err != nil {
-			lastError = err.Error()
-		} else {
-			lastError = status.Executor.LastError
-		}
-		if err == nil && status.Status != "offline" && status.LastSeenAt != nil && status.LastSeenAt.After(enrolled) && lastError == "" {
-			_, err = m.run(ctx, []string{"shell", "--workdir", "/", node, "--", "sh", "-c", `exec "$HOME/.local/bin/modelgauge" _guest controller-key-commit`}, nil)
-			return err
-		}
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case <-time.After(time.Second):
-		}
-	}
-	return fmt.Errorf("controller executor cannot reach %s at %s over SSH: %s; inspect node status, then use node reconnect --name %s", node, connection.Address, lastError, node)
+	_, err = m.run(ctx, []string{"shell", "--workdir", "/", node, "--", "sh", "-c", `exec "$HOME/.local/bin/modelgauge" _guest controller-key-commit`}, nil)
+	return err
 }
 
 // ReconnectNode refreshes transport registration without installing or rebuilding anything.
@@ -155,11 +128,10 @@ func (m *ownershipManager) reconnectNode(ctx context.Context, c Config, node str
 	if !validVMName.MatchString(node) {
 		return fmt.Errorf("invalid node name")
 	}
-	unlock, err := m.lock()
+	err := m.prepareDirectory()
 	if err != nil {
 		return err
 	}
-	defer unlock()
 	registry, err := m.load()
 	if err != nil {
 		return err
@@ -191,51 +163,8 @@ func (m *ownershipManager) reconnectNode(ctx context.Context, c Config, node str
 	if err = connectionAction(ctx, c, node, "pause"); err != nil {
 		return fmt.Errorf("pause node executor before reconnecting: %w", err)
 	}
-	defer func() {
-		if resultErr != nil {
-			recovery, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			resultErr = errors.Join(resultErr, connectionAction(recovery, c, node, "resume"))
-		}
-	}()
 	if err = m.checkNodeForward(ctx, c, node); err != nil {
 		return err
 	}
 	return m.enrollControllerExecutor(ctx, c, node)
-}
-
-// Only a fully paused managed fleet can preserve queued jobs during an upgrade.
-// An unreachable/legacy controller retains the stricter database guard.
-func pauseExecutors(ctx context.Context, c Config) (paused []string, all bool, resultErr error) {
-	api := &client.Client{BaseURL: c.ControllerURL, AdminToken: c.AdminToken}
-	var nodes []struct {
-		ID string `json:"node_id"`
-	}
-	if _, err := api.DoJSON(ctx, "GET", "/v1/nodes", "admin", nil, &nodes); err != nil {
-		return nil, false, nil
-	}
-	defer func() {
-		if resultErr != nil {
-			recovery, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			for _, node := range paused {
-				resultErr = errors.Join(resultErr, connectionAction(recovery, c, node, "resume"))
-			}
-		}
-	}()
-	all = true
-	for _, node := range nodes {
-		var status struct {
-			Configured bool `json:"configured"`
-		}
-		if _, err := api.DoJSON(ctx, "GET", "/v1/nodes/"+node.ID+"/connection", "admin", nil, &status); err != nil || !status.Configured {
-			all = false
-			continue
-		}
-		if err := connectionAction(ctx, c, node.ID, "pause"); err != nil {
-			return paused, false, err
-		}
-		paused = append(paused, node.ID)
-	}
-	return paused, all, nil
 }

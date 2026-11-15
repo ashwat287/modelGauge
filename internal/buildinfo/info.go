@@ -1,8 +1,6 @@
 // Package buildinfo is populated consistently for CLI, controller and agents.
 package buildinfo
 
-import "os"
-
 var Version = "dev"
 var Commit = "unknown"
 var Date = "unknown"
@@ -17,8 +15,4 @@ type Info struct {
 	OS           string `json:"os"`
 	Architecture string `json:"architecture"`
 	Channel      string `json:"channel"`
-}
-
-func Released() bool {
-	return Channel == "release" || (Channel == "snapshot" && os.Getenv("MODELGAUGE_RELEASE_BASE_URL") != "")
 }

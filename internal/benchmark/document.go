@@ -24,13 +24,9 @@ type Document struct {
 		Name string `json:"name"`
 	} `json:"metadata"`
 	Spec struct {
-		Nodes  []string `json:"nodes"`
-		Models []string `json:"models"`
-		Matrix struct {
-			Threads  []int `json:"threads,omitempty"`
-			Contexts []int `json:"contexts"`
-		} `json:"matrix"`
-		Stages []DocumentStage `json:"stages"`
+		Threads  []int           `json:"threads,omitempty"`
+		Contexts []int           `json:"contexts"`
+		Stages   []DocumentStage `json:"stages"`
 	} `json:"spec"`
 }
 
@@ -152,29 +148,14 @@ func (d Document) Validate() error {
 	if !documentName.MatchString(d.Metadata.Name) {
 		return errors.New("metadata.name must be 1..63 lowercase letters, digits or hyphens, starting with a letter or digit")
 	}
-	for name, values := range map[string][]string{"nodes": d.Spec.Nodes, "models": d.Spec.Models} {
-		if len(values) < 1 || len(values) > 32 {
-			return fmt.Errorf("spec.%s requires 1..32 entries", name)
-		}
-		seen := map[string]bool{}
-		for _, v := range values {
-			if v == "" || len(v) > 256 || seen[v] {
-				return fmt.Errorf("spec.%s contains an empty, oversized or duplicate entry %q", name, v)
-			}
-			seen[v] = true
-		}
-	}
-	if len(d.Spec.Nodes)*len(d.Spec.Models) > 128 {
-		return errors.New("experiment exceeds 128 node/model pairs")
-	}
-	for name, values := range map[string][]int{"threads": d.Spec.Matrix.Threads, "contexts": d.Spec.Matrix.Contexts} {
+	for name, values := range map[string][]int{"threads": d.Spec.Threads, "contexts": d.Spec.Contexts} {
 		if len(values) > 16 {
-			return fmt.Errorf("spec.matrix.%s exceeds 16 values", name)
+			return fmt.Errorf("spec.%s exceeds 16 values", name)
 		}
 		seen := map[int]bool{}
 		for _, v := range values {
 			if v < 1 || seen[v] {
-				return fmt.Errorf("spec.matrix.%s requires unique positive integers", name)
+				return fmt.Errorf("spec.%s requires unique positive integers", name)
 			}
 			seen[v] = true
 		}
@@ -199,7 +180,7 @@ func (d Document) Validate() error {
 }
 
 func (d Document) Plan(ctx context.Context, node string, mode protocol.ExecutionMode, model protocol.Model) (protocol.Plan, error) {
-	threads, contexts := d.Spec.Matrix.Threads, d.Spec.Matrix.Contexts
+	threads, contexts := d.Spec.Threads, d.Spec.Contexts
 	if len(threads) == 0 {
 		threads = []int{1, 2}
 	}

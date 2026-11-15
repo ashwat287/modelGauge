@@ -1,7 +1,6 @@
 package benchmark
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -34,28 +33,10 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 	if outputDir == "" {
 		outputDir = filepath.Join("results", runID)
 	}
-	if err = prepareOutputDir(outputDir, options.Resume); err != nil {
+	if err = prepareOutputDir(outputDir); err != nil {
 		return result, outputDir, err
 	}
 	planFile := filepath.Join(outputDir, "plan.json")
-	recovered := false
-	if options.Resume {
-		data, err := os.ReadFile(planFile)
-		if err == nil {
-			var previous protocol.Plan
-			decodeErr := json.Unmarshal(data, &previous)
-			before, beforeErr := json.Marshal(previous)
-			after, afterErr := json.Marshal(plan)
-			if decodeErr != nil || beforeErr != nil || afterErr != nil || !bytes.Equal(before, after) {
-				return result, outputDir, errors.New("serving resume plan differs from saved plan")
-			}
-			recovered = true
-		} else if !os.IsNotExist(err) {
-			return result, outputDir, err
-		} else if entries, e := os.ReadDir(outputDir); e != nil || len(entries) != 0 {
-			return result, outputDir, errors.New("refusing to resume an unrecognized nonempty output directory")
-		}
-	}
 	if err = platform.WriteJSON(planFile, plan, 0600); err != nil {
 		return result, outputDir, err
 	}
@@ -66,7 +47,7 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 	if serving.Server == nil && serving.MetricsURL == "" {
 		report.Unavailable = append(report.Unavailable, "server queue, KV-cache and backend metrics: no metrics_url supplied")
 	}
-	result = protocol.Result{SchemaVersion: resultSchemaV1, RunID: runID, PlanID: plan.PlanID, NodeID: plan.NodeID, ExecutionMode: plan.ExecutionMode, Status: protocol.RunStatusRunning, StartedAt: report.StartedAt, RuntimeMetadata: map[string]string{"benchmark_kind": "serving", "recovered": fmt.Sprint(recovered), "client_goos": runtime.GOOS, "client_goarch": runtime.GOARCH, "benchmark_version": buildinfo.Version, "benchmark_commit": buildinfo.Commit}}
+	result = protocol.Result{SchemaVersion: resultSchemaV1, RunID: runID, PlanID: plan.PlanID, NodeID: plan.NodeID, ExecutionMode: plan.ExecutionMode, Status: protocol.RunStatusRunning, StartedAt: report.StartedAt, RuntimeMetadata: map[string]string{"benchmark_kind": "serving", "client_goos": runtime.GOOS, "client_goarch": runtime.GOARCH, "benchmark_version": buildinfo.Version, "benchmark_commit": buildinfo.Commit}}
 	defer func() {
 		report.CompletedAt = time.Now().UTC()
 		result.CompletedAt = report.CompletedAt
@@ -98,10 +79,7 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 			result.InvalidReason = resultErr.Error()
 		}
 		resultFile := "result.json"
-		if options.Resume && ctx.Err() != nil {
-			// Agent shutdown must resume unfinished cases, not upload an interrupted attempt as final.
-			resultFile = "interrupted-result-" + time.Now().UTC().Format("20060102T150405.000000000") + ".json"
-		}
+
 		resultErr = errors.Join(resultErr, platform.WriteJSON(filepath.Join(outputDir, resultFile), result, 0600))
 	}()
 	var server *modelServer
@@ -109,18 +87,8 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 		if runtime.GOOS != "linux" {
 			return result, outputDir, errors.New("managed model benchmarks execute on the Linux benchmark node; submit this plan through the controller")
 		}
-		if recovered {
-			for _, name := range []string{"model-server.log", "runtime.sha256"} {
-				path := filepath.Join(outputDir, name)
-				if _, e := os.Lstat(path); e == nil {
-					if e = os.Rename(path, path+".interrupted-"+time.Now().UTC().Format("20060102T150405.000000000")); e != nil {
-						return result, outputDir, e
-					}
-				} else if !os.IsNotExist(e) {
-					return result, outputDir, e
-				}
-			}
-		}
+
+		options.log("Starting temporary llama-server")
 		server, err = startModelServer(ctx, plan, serving, outputDir)
 		if err != nil {
 			return result, outputDir, err
@@ -133,9 +101,7 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 		report.Endpoint, report.Settings = serving.Endpoint, serving.RuntimeSettings
 		report.Warnings = []string{"Measured on the benchmark node: the load generator shares CPU and memory with the model process.", "Stream chunks are not necessarily individual tokens. Process startup includes model loading and runtime initialization, not an isolated cold-disk load."}
 		report.Unavailable = []string{"physical-host sensors and power hidden by a VM", "per-request server queue time unless exposed by the runtime", "memory bandwidth and general semantic grading"}
-		if recovered {
-			report.Warnings = append(report.Warnings, "A new model process was started after interruption; all cases are rerun to avoid combining different process/cache states.")
-		}
+
 		result.RuntimeMetadata["model_sha256"] = plan.Model.SHA256
 	}
 
@@ -169,20 +135,12 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 		return result, outputDir, err
 	}
 	for _, spec := range serving.Cases {
+		options.log("Serving benchmark: " + spec.ID)
 		if ctx.Err() != nil {
 			return result, outputDir, ctx.Err()
 		}
-		checkpoint := filepath.Join(outputDir, spec.ID+".summary.json")
-		if recovered {
-			for _, suffix := range []string{".requests.jsonl", ".warmup.jsonl", ".resources.jsonl", ".summary.json"} {
-				name := filepath.Join(outputDir, spec.ID+suffix)
-				if _, err = os.Lstat(name); err == nil {
-					if err = os.Rename(name, name+".interrupted-"+time.Now().UTC().Format("20060102T150405.000000000")); err != nil {
-						return result, outputDir, err
-					}
-				}
-			}
-		}
+		summaryPath := filepath.Join(outputDir, spec.ID+".summary.json")
+
 		if server != nil {
 			if err := server.running(); err != nil {
 				return result, outputDir, err
@@ -198,7 +156,7 @@ func runServingPlan(ctx context.Context, plan protocol.Plan, options Options) (r
 				return result, outputDir, err
 			}
 		}
-		if err = platform.WriteJSON(checkpoint, measured, 0600); err != nil {
+		if err = platform.WriteJSON(summaryPath, measured, 0600); err != nil {
 			return result, outputDir, err
 		}
 	}

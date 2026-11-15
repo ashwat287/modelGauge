@@ -5,7 +5,6 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"os"
 	"path/filepath"
 	"sort"
@@ -14,6 +13,7 @@ import (
 )
 
 type CleanupOptions struct {
+	Force     bool
 	DryRun    bool
 	DeleteVMs bool
 }
@@ -37,7 +37,6 @@ func Cleanup(ctx context.Context, options CleanupOptions) (report CleanupReport,
 	if err != nil {
 		return report, err
 	}
-	paused := []string{}
 	if !options.DryRun {
 		c, e := Load()
 		if e == nil {
@@ -52,15 +51,6 @@ func Cleanup(ctx context.Context, options CleanupOptions) (report CleanupReport,
 					return report, e
 				}
 			}
-			defer func() {
-				if resultErr != nil {
-					restore, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-					defer cancel()
-					for _, node := range paused {
-						resultErr = errors.Join(resultErr, connectionAction(restore, c, node, "resume"))
-					}
-				}
-			}()
 			for _, v := range registry.VMs {
 				if _, present := instances[v.Name]; !present {
 					continue
@@ -68,10 +58,13 @@ func Cleanup(ctx context.Context, options CleanupOptions) (report CleanupReport,
 				if v.Role != "benchmark" || v.Cleaned || !v.Prepared {
 					continue
 				}
-				if e = connectionAction(ctx, c, v.Name, "pause"); e != nil {
+				action := "pause"
+				if options.Force {
+					action = "cleanup"
+				}
+				if e = connectionAction(ctx, c, v.Name, action); e != nil {
 					return report, fmt.Errorf("pause controller executor before cleanup: %w", e)
 				}
-				paused = append(paused, v.Name)
 			}
 		} else if !os.IsNotExist(e) {
 			return report, e
@@ -90,37 +83,14 @@ func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (repor
 		return report, e
 	}
 	if !o.DryRun {
-		unlock, e := m.lock()
+		e := m.prepareDirectory()
 		if e != nil {
 			return report, e
 		}
-		defer unlock()
 	}
 	registry, err := m.load()
 	if err != nil {
 		return report, err
-	}
-	// Hold the same host locks as the external executors until cleanup is done.
-	for _, v := range registry.VMs {
-		if v.Role != "benchmark" {
-			continue
-		}
-		if !o.DryRun {
-			unlock, e := platform.Lock("agent-" + v.Name)
-			if e != nil {
-				return report, fmt.Errorf("stop the executor for %s before cleanup: %w", v.Name, e)
-			}
-			defer unlock()
-		}
-		home, e := os.UserHomeDir()
-		if e != nil {
-			return report, e
-		}
-		if _, e = os.Lstat(filepath.Join(home, ".local/share/modelgauge/executors", v.Name, ".pending.json")); e == nil {
-			return report, fmt.Errorf("executor for %s has pending work; finish recovery before cleanup", v.Name)
-		} else if !os.IsNotExist(e) {
-			return report, e
-		}
 	}
 	instances, err := m.instances(ctx)
 	if err != nil {

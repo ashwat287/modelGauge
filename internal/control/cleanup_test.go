@@ -12,7 +12,6 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
-	"syscall"
 	"testing"
 
 	"github.com/nerdylucifer/modelgauge/internal/guest"
@@ -142,7 +141,7 @@ func (f *fakeLima) run(ctx context.Context, args []string, input []byte) ([]byte
 						if strings.Contains(strings.Join(command, " "), " get ") {
 							return []byte("pod/benchmark-postgres-0"), nil
 						}
-						return []byte("1\n0\n"), nil
+						return nil, fmt.Errorf("controller operation is active")
 					}
 					return nil, nil
 				}
@@ -255,26 +254,11 @@ func TestDryRunAndCreatedVMDeletion(t *testing.T) {
 	}
 }
 func TestCleanupRefusesUnsafeTargetsBeforeDeletion(t *testing.T) {
-	for _, scenario := range []string{"marker", "machine", "symlink", "changed-file", "pending", "protected", "outside-manifest", "execution-lock", "agent-lock"} {
+	for _, scenario := range []string{"marker", "machine", "symlink", "changed-file", "protected", "outside-manifest"} {
 		t.Run(scenario, func(t *testing.T) {
 			m, f := fixture(t)
 			g := prepareTestVM(t, m, f, "owned", "benchmark")
 			switch scenario {
-			case "execution-lock", "agent-lock":
-				name := "execution.lock"
-				if scenario == "agent-lock" {
-					name = "agent.lock"
-				}
-				path := filepath.Join(g.home, ".local/share/modelgauge/locks", name)
-				_ = os.MkdirAll(filepath.Dir(path), 0700)
-				file, err := os.OpenFile(path, os.O_CREATE|os.O_RDWR, 0600)
-				if err != nil {
-					t.Fatal(err)
-				}
-				if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-					t.Fatal(err)
-				}
-				t.Cleanup(func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() })
 			case "marker":
 				_ = os.WriteFile(markerPath(g.instance.Dir), []byte(strings.Repeat("f", 32)), 0600)
 			case "machine":
@@ -284,9 +268,6 @@ func TestCleanupRefusesUnsafeTargetsBeforeDeletion(t *testing.T) {
 				_ = os.Symlink(filepath.Join(g.home, "original"), filepath.Join(g.home, ".local/share/modelgauge"))
 			case "changed-file":
 				_ = os.WriteFile(filepath.Join(g.home, ".local/bin/modelgauge"), []byte("user replacement"), 0600)
-			case "pending":
-				_ = os.MkdirAll(filepath.Join(g.home, ".local/share/modelgauge/results"), 0700)
-				_ = os.WriteFile(filepath.Join(g.home, ".local/share/modelgauge/results/.pending.json"), []byte("{}"), 0600)
 			case "protected":
 				g.instance.Protected = true
 			case "outside-manifest":

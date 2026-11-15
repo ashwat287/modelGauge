@@ -8,12 +8,32 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/guest"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"io"
+	"net/http"
 	"os"
 	"strconv"
+	"time"
 )
 
 // Internal Linux protocol. JSON and tar stdout never contain human banners.
 func runGuest(ctx context.Context, args []string, out, stderr io.Writer) int {
+	if len(args) == 1 && args[0] == "idle" {
+		client := &http.Client{Timeout: 5 * time.Second}
+		response, err := client.Get("http://127.0.0.1:8080/healthz")
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		defer response.Body.Close()
+		var state struct {
+			Active *bool `json:"active"`
+		}
+		err = json.NewDecoder(response.Body).Decode(&state)
+		if err != nil || response.StatusCode != 200 || state.Active == nil || *state.Active {
+			fmt.Fprintln(stderr, "operation is active or controller activity is unavailable")
+			return 1
+		}
+		return 0
+	}
 	if len(args) == 1 && args[0] == "controller-key-commit" {
 		runtime, err := guest.NewRuntime()
 		if err == nil {

@@ -4,195 +4,122 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
-	"fmt"
-	"log/slog"
+	"io"
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
-	"sync"
+	"sync/atomic"
 	"time"
 
+	"github.com/nerdylucifer/modelgauge/internal/controller"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 var nodeName = regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`)
 
-type controllerWorker struct {
-	connection               SSHConnection
-	cancel                   context.CancelFunc
-	done                     chan struct{}
-	healthMu                 sync.Mutex
-	lastError                string
-	lastAttempt, lastSuccess time.Time
+type operation struct {
+	cancel context.CancelFunc
+	done   chan struct{}
 }
 
-// ControllerExecutor embeds the existing durable lease loop in the controller.
-// Its configuration and upload journals share the controller's persistent volume.
+// The active pointer supports cancellation/monitoring, not admission or locking.
+// shortcut: callers must submit one foreground operation at a time.
 type ControllerExecutor struct {
-	mu                    sync.Mutex
-	ctx                   context.Context
-	directory, url, token string
-	workers               map[string]*controllerWorker
-	closed                bool
+	directory string
+	active    atomic.Pointer[operation]
 }
 
-func NewControllerExecutor(ctx context.Context, directory, url, token string) (*ControllerExecutor, error) {
-	e := &ControllerExecutor{ctx: ctx, directory: directory, url: url, token: token, workers: map[string]*controllerWorker{}}
+func NewControllerExecutor(_ context.Context, directory string) (*ControllerExecutor, error) {
 	if err := os.MkdirAll(filepath.Join(directory, "connections"), 0700); err != nil {
 		return nil, err
 	}
-	files, err := os.ReadDir(filepath.Join(directory, "connections"))
+	return &ControllerExecutor{directory: directory}, nil
+}
+func (e *ControllerExecutor) connection(node string) (SSHConnection, error) {
+	var c SSHConnection
+	if !nodeName.MatchString(node) {
+		return c, errors.New("invalid node ID")
+	}
+	data, err := os.ReadFile(filepath.Join(e.directory, "connections", node+".json"))
 	if err != nil {
-		return nil, err
+		return c, err
+	}
+	if err = json.Unmarshal(data, &c); err != nil {
+		return c, err
+	}
+	return c, c.Validate()
+}
+func (e *ControllerExecutor) Set(node string, c SSHConnection) error {
+	if !nodeName.MatchString(node) {
+		return errors.New("invalid node ID")
+	}
+	if err := c.Validate(); err != nil {
+		return err
+	}
+	files, err := os.ReadDir(filepath.Join(e.directory, "connections"))
+	if err != nil {
+		return err
 	}
 	for _, f := range files {
-		if f.IsDir() || filepath.Ext(f.Name()) != ".json" {
-			continue
-		}
-		node := f.Name()[:len(f.Name())-5]
-		if _, err := os.Stat(filepath.Join(directory, "connections", node+".paused")); err == nil {
-			continue
-		}
-		if !nodeName.MatchString(node) {
-			e.Close()
-			return nil, errors.New("invalid executor node configuration")
-		}
-		data, err := os.ReadFile(filepath.Join(directory, "connections", f.Name()))
-		var connection SSHConnection
-		if err == nil {
-			err = json.Unmarshal(data, &connection)
-		}
-		if err == nil {
-			err = connection.Validate()
-		}
-		if err != nil {
-			e.Close()
-			return nil, fmt.Errorf("load executor connection for %s: %w", node, err)
-		}
-		e.start(node, connection)
-	}
-	return e, nil
-}
-func (e *ControllerExecutor) state(node string) string {
-	return filepath.Join(e.directory, "runs", node)
-}
-func (e *ControllerExecutor) start(node string, connection SSHConnection) {
-	ctx, cancel := context.WithCancel(e.ctx)
-	w := &controllerWorker{connection: connection, cancel: cancel, done: make(chan struct{})}
-	e.workers[node] = w
-	go func() {
-		defer close(w.done)
-		for {
-			config := Config{SSH: &connection, NodeID: node, DisplayName: node, NodeKind: "virtual", ExecutionMode: protocol.ExecutionModeLima, ControllerURL: e.url, Token: e.token, ResultsDir: e.state(node)}
-			config.report = func(err error) {
-				w.healthMu.Lock()
-				defer w.healthMu.Unlock()
-				w.lastAttempt = time.Now().UTC()
-				w.lastError = ""
-				if err == nil {
-					w.lastSuccess = w.lastAttempt
-					return
-				}
-				w.lastError = err.Error()
-				if e.token != "" {
-					w.lastError = strings.ReplaceAll(w.lastError, e.token, "[REDACTED]")
-				}
-				if len(w.lastError) > 4096 {
-					w.lastError = w.lastError[:4096] + "..."
-				}
-			}
-			err := EnsureResultsDir(config.ResultsDir)
-			if err == nil {
-				err = Run(ctx, config, false, 5*time.Second)
-			}
-			if err != nil {
-				config.report(err)
-			}
-			if err != nil && ctx.Err() == nil {
-				slog.Error("controller executor stopped; retrying", "node", node, "error", err)
-			}
-			select {
-			case <-ctx.Done():
-				return
-			case <-time.After(5 * time.Second):
-			}
-		}
-	}()
-}
-func (e *ControllerExecutor) pending(node string) (bool, error) {
-	_, err := os.Lstat(filepath.Join(e.state(node), ".pending.json"))
-	if err == nil {
-		return true, nil
-	}
-	if os.IsNotExist(err) {
-		return false, nil
-	}
-	return false, err
-}
-func (e *ControllerExecutor) stopIdle(node string) error {
-	if busy, err := e.pending(node); err != nil {
-		return err
-	} else if busy {
-		return errors.New("executor has pending work; finish or cancel it before changing the connection")
-	}
-	if w := e.workers[node]; w != nil {
-		w.cancel()
-		<-w.done
-		delete(e.workers, node)
-		// A claim racing the first check must retain its connection and recovery state.
-		if busy, err := e.pending(node); err != nil || busy {
-			e.start(node, w.connection)
-			return errors.New("executor claimed work during connection change; retry after recovery")
+		if filepath.Ext(f.Name()) == ".json" && f.Name() != node+".json" {
+			return errors.New("workspace already has a benchmark node")
 		}
 	}
-	return nil
+	return platform.WriteJSON(filepath.Join(e.directory, "connections", node+".json"), c, 0600)
 }
-func (e *ControllerExecutor) Set(node string, connection SSHConnection) error {
+func (e *ControllerExecutor) work(ctx context.Context, node string, request workerRequest, log io.Writer) (workerResponse, error) {
+	c, err := e.connection(node)
+	if err != nil {
+		return workerResponse{}, err
+	}
+	ctx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	op := &operation{cancel: cancel, done: make(chan struct{})}
+	e.active.Store(op)
+	defer func() { close(op.done); e.active.CompareAndSwap(op, nil) }()
+	return remoteWork(ctx, Config{SSH: &c, Log: log}, request)
+}
+func (e *ControllerExecutor) Inspect(ctx context.Context, node string) (platform.Host, []controller.NodeModel, error) {
+	r, err := e.work(ctx, node, workerRequest{Operation: "inspect"}, nil)
+	return r.Host, r.Models, err
+}
+func (e *ControllerExecutor) Install(ctx context.Context, node, model, url, sha string, log io.Writer) error {
+	_, err := e.work(ctx, node, workerRequest{Operation: "install", ModelID: model, SourceURL: url, SHA256: sha}, log)
+	return err
+}
+func (e *ControllerExecutor) Benchmark(ctx context.Context, node, run string, p protocol.Plan, log io.Writer) (protocol.Result, error) {
+	r, err := e.work(ctx, node, workerRequest{Operation: "benchmark", RunID: run, Plan: &p}, log)
+	return r.Result, err
+}
+func (e *ControllerExecutor) Active() bool { return e.active.Load() != nil }
+func (e *ControllerExecutor) Pause(node string, force bool) error {
 	if !nodeName.MatchString(node) {
-		return errors.New("invalid executor node ID")
+		return errors.New("invalid node ID")
 	}
-	if err := connection.Validate(); err != nil {
-		return err
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	return e.setLocked(node, connection)
-}
-func (e *ControllerExecutor) setLocked(node string, connection SSHConnection) error {
-	if e.closed {
-		return errors.New("controller executor is closed")
-	}
-	if e.ctx.Err() != nil {
-		return e.ctx.Err()
-	}
-	if w := e.workers[node]; w != nil && w.connection == connection {
+	op := e.active.Load()
+	if op == nil {
 		return nil
 	}
-	previous := e.workers[node]
-	if err := e.stopIdle(node); err != nil {
-		return err
+	if !force {
+		return errors.New("an operation is running; retry cleanup with --force")
 	}
-	if err := platform.WriteJSON(filepath.Join(e.directory, "connections", node+".json"), connection, 0600); err != nil {
-		if previous != nil {
-			e.start(node, previous.connection)
-		}
-		return err
+	op.cancel()
+	select {
+	case <-op.done:
+		return nil
+	case <-time.After(20 * time.Second):
+		return errors.New("worker did not stop; cleanup refused")
 	}
-	if err := os.Remove(filepath.Join(e.directory, "connections", node+".paused")); err != nil && !os.IsNotExist(err) {
-		return err
+}
+func (e *ControllerExecutor) Close() {
+	if op := e.active.Load(); op != nil {
+		op.cancel()
+		<-op.done
 	}
-	e.start(node, connection)
-	return nil
 }
 func (e *ControllerExecutor) Remove(node string) error {
-	if !nodeName.MatchString(node) {
-		return errors.New("invalid executor node ID")
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	if err := e.stopIdle(node); err != nil {
+	if err := e.Pause(node, false); err != nil {
 		return err
 	}
 	err := os.Remove(filepath.Join(e.directory, "connections", node+".json"))
@@ -202,81 +129,6 @@ func (e *ControllerExecutor) Remove(node string) error {
 	return err
 }
 func (e *ControllerExecutor) Status(node string) (map[string]any, error) {
-	if !nodeName.MatchString(node) {
-		return nil, errors.New("invalid executor node ID")
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	pending, err := e.pending(node)
-	_, configured := e.workers[node]
-	status := map[string]any{"node_id": node, "configured": configured, "pending": pending, "location": "controller"}
-	_, markerErr := os.Stat(filepath.Join(e.directory, "connections", node+".paused"))
-	status["paused"] = markerErr == nil
-	if markerErr != nil && !os.IsNotExist(markerErr) {
-		return nil, markerErr
-	}
-	if w := e.workers[node]; w != nil {
-		w.healthMu.Lock()
-		defer w.healthMu.Unlock()
-		status["address"], status["last_error"] = w.connection.Address, w.lastError
-		if !w.lastAttempt.IsZero() {
-			status["last_attempt_at"] = w.lastAttempt
-		}
-		if !w.lastSuccess.IsZero() {
-			status["last_success_at"] = w.lastSuccess
-		}
-	}
-	return status, err
-}
-func (e *ControllerExecutor) Close() {
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	e.closed = true
-	for _, w := range e.workers {
-		w.cancel()
-	}
-	for node, w := range e.workers {
-		<-w.done
-		delete(e.workers, node)
-	}
-}
-
-func (e *ControllerExecutor) Pause(node string) error {
-	if !nodeName.MatchString(node) {
-		return errors.New("invalid node ID")
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	marker := filepath.Join(e.directory, "connections", node+".paused")
-	if err := platform.WriteFile(marker, []byte("paused\n"), 0600); err != nil {
-		return err
-	}
-	if err := e.stopIdle(node); err != nil {
-		_ = os.Remove(marker)
-		return err
-	}
-	return nil
-}
-func (e *ControllerExecutor) Resume(node string) error {
-	if !nodeName.MatchString(node) {
-		return errors.New("invalid node ID")
-	}
-	e.mu.Lock()
-	defer e.mu.Unlock()
-	data, err := os.ReadFile(filepath.Join(e.directory, "connections", node+".json"))
-	if os.IsNotExist(err) {
-		_ = os.Remove(filepath.Join(e.directory, "connections", node+".paused"))
-		return nil
-	}
-	if err != nil {
-		return err
-	}
-	var connection SSHConnection
-	if err = json.Unmarshal(data, &connection); err != nil {
-		return err
-	}
-	if err = connection.Validate(); err != nil {
-		return err
-	}
-	return e.setLocked(node, connection)
+	_, err := e.connection(node)
+	return map[string]any{"node_id": node, "configured": err == nil, "active": e.Active(), "location": "controller"}, nil
 }

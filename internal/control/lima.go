@@ -18,23 +18,23 @@ import (
 	"os/exec"
 	"path/filepath"
 	"regexp"
+	"runtime"
 	"strings"
 	"time"
 )
 
 type Config struct {
+	Model         string `json:"model,omitempty"`
 	VM            string `json:"vm"`
 	OwnerID       string `json:"owner_id,omitempty"`
 	ControllerURL string `json:"controller_url"`
 	AdminToken    string `json:"admin_token"`
-	AgentToken    string `json:"agent_token"`
 }
 type Options struct {
-	ReadinessTimeout                                 time.Duration
-	Name, Image, Source, K3sVersion, BenchmarkTarget string
-	HelperBinary                                     string
-	CPUs, MemoryGiB, DiskGiB, Port                   int
-	Log                                              io.Writer
+	ReadinessTimeout                  time.Duration
+	Name, K3sVersion, BenchmarkTarget string
+	CPUs, MemoryGiB, DiskGiB, Port    int
+	Log                               io.Writer
 }
 
 func ConfigFile() (string, error) {
@@ -79,6 +79,9 @@ func capture(ctx context.Context, name, script string) (string, error) {
 }
 
 func Bootstrap(ctx context.Context, o Options) (result Config, resultErr error) {
+	if _, err := nodeBinary(runtime.GOARCH); err != nil {
+		return Config{}, err
+	}
 	if !regexp.MustCompile(`^[a-zA-Z0-9][a-zA-Z0-9_-]*$`).MatchString(o.Name) {
 		return Config{}, fmt.Errorf("invalid VM name")
 	}
@@ -88,29 +91,15 @@ func Bootstrap(ctx context.Context, o Options) (result Config, resultErr error) 
 	if o.Log == nil {
 		o.Log = io.Discard
 	}
-	var paused []string
 	var previous Config
-	queuedPaused := false
-	if saved, err := Load(); err == nil && saved.VM == o.Name {
-		previous = saved
-		paused, queuedPaused, err = pauseExecutors(ctx, saved)
-		if err != nil {
-			return Config{}, fmt.Errorf("pause executors before control upgrade: %w", err)
+	if saved, err := Load(); err == nil {
+		if saved.VM != "" && saved.VM != o.Name {
+			return Config{}, fmt.Errorf("workspace already uses controller %s; reuse it or clean up first", saved.VM)
 		}
-		defer func() {
-			recovery, cancel := context.WithTimeout(context.Background(), 30*time.Second)
-			defer cancel()
-			target := previous
-			if result.ControllerURL != "" {
-				target = result
-			}
-			for _, node := range paused {
-				resultErr = errors.Join(resultErr, connectionAction(recovery, target, node, "resume"))
-			}
-		}()
+		previous = saved
 	}
 
-	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "control", o.CPUs, o.MemoryGiB, o.DiskGiB, o.Port, o.Log, NodeOptions{Source: o.Source, AgentBinary: o.HelperBinary, queuedJobsPaused: queuedPaused})
+	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "control", o.CPUs, o.MemoryGiB, o.DiskGiB, o.Port, o.Log, NodeOptions{})
 	if err != nil {
 		return Config{}, err
 	}
@@ -194,15 +183,9 @@ mkdir -p "$HOME/.local/share/modelgauge/deploy"
 	if err = shell(ctx, o.Name, `bash "$HOME/.local/share/modelgauge/deploy/monitoring/install-node-exporter.sh" `+quote(controlIP), nil, o.Log); err != nil {
 		return Config{}, err
 	}
-	image := o.Image
-	if o.Source != "" {
-		image, err = buildImage(ctx, o.Name, o.Source, o.Log)
-		if err != nil {
-			return Config{}, err
-		}
-	}
-	if image == "" {
-		return Config{}, fmt.Errorf("provide --image with a published controller image, or --source with the Go repository")
+	image, err := buildImage(ctx, o.Name, o.Log)
+	if err != nil {
+		return Config{}, err
 	}
 
 	script := `set -euo pipefail
@@ -224,8 +207,6 @@ sh create-secrets.sh
 	// Render the selected image before apply so a nonexistent default image is
 	// never briefly scheduled. Preserve the existing controller Service/PVCs.
 	script += `sed ` + quote("s|ghcr.io/nerdylucifer/modelgauge:dev|"+image+"|g") + ` controller.yaml > controller-selected.yaml
-kubectl apply -f postgres.yaml
-kubectl -n benchmark-data rollout status statefulset/benchmark-postgres --timeout="${MODELGAUGE_ROLLOUT_TIMEOUT:-600s}"
 kubectl apply -f controller-selected.yaml
 kubectl -n benchmark-system rollout restart deployment/modelgauge-controller
 kubectl -n benchmark-system rollout status deployment/modelgauge-controller --timeout="${MODELGAUGE_ROLLOUT_TIMEOUT:-600s}"
@@ -247,15 +228,11 @@ kubectl -n monitoring rollout status deployment/grafana --timeout="${MODELGAUGE_
 	if err != nil {
 		return Config{}, err
 	}
-	agent, err := capture(ctx, o.Name, strings.ReplaceAll(tokenScript, "modelgauge-admin-auth", "modelgauge-agent-auth"))
-	if err != nil {
-		return Config{}, err
-	}
 	ownerID, err := ownershipID(ctx, o.Name)
 	if err != nil {
 		return Config{}, err
 	}
-	c := Config{VM: o.Name, OwnerID: ownerID, ControllerURL: fmt.Sprintf("http://127.0.0.1:%d", o.Port), AdminToken: admin, AgentToken: agent}
+	c := Config{Model: previous.Model, VM: o.Name, OwnerID: ownerID, ControllerURL: fmt.Sprintf("http://127.0.0.1:%d", o.Port), AdminToken: admin}
 
 	if err = Forward(ctx, c.VM, "benchmark-system", "modelgauge-controller", o.Port, 8080, "/healthz"); err != nil {
 		return Config{}, err
@@ -366,11 +343,6 @@ systemctl --user is-active --quiet "$unit"
 	return fmt.Errorf("local service tunnel did not become ready at %s", endpoint)
 }
 
-func Status(ctx context.Context, c Config, out io.Writer) error {
-	return shell(ctx, c.VM, `export KUBECONFIG="$HOME/.kube/modelgauge-config"; kubectl get nodes; kubectl -n benchmark-system get deploy; kubectl -n benchmark-data get statefulset,pvc; kubectl -n monitoring get deploy,pvc`, nil, out)
-}
-
-// A systemd scope supervises guest descendants even if the local SSH client dies.
 func shell(ctx context.Context, name, script string, input io.Reader, output io.Writer) (err error) {
 	session, _ := ctx.Value(bootstrapKey{}).(*bootstrapSession)
 	if session == nil {
@@ -490,12 +462,13 @@ func forwardHealthy(ctx context.Context, endpoint, service string) bool {
 	var response struct {
 		Status   string `json:"status"`
 		Database string `json:"database"`
+		Active   *bool  `json:"active"`
 	}
 	if json.NewDecoder(io.LimitReader(resp.Body, 4096)).Decode(&response) != nil {
 		return false
 	}
 	if service == "modelgauge-controller" {
-		return response.Status == "ok" && response.Database == "reachable"
+		return response.Status == "ok" && response.Active != nil
 	}
 	return response.Database == "ok"
 }

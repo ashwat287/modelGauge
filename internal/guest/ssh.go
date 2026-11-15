@@ -30,11 +30,6 @@ func (r Runtime) InstallControllerKey(ctx context.Context, public []byte) error 
 	if err != nil {
 		return err
 	}
-	unlock, err := r.lock(".local/share/modelgauge/locks/execution.lock", true)
-	if err != nil {
-		return err
-	}
-	defer unlock()
 	binary := filepath.Join(r.Home, ".local/bin/modelgauge")
 	command := "'" + strings.ReplaceAll(binary, "'", "'\\''") + "' _guest connection"
 	command = strings.NewReplacer(`\`, `\\`, `"`, `\"`).Replace(command)

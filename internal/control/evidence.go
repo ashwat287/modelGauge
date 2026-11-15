@@ -40,11 +40,10 @@ func CopyLimaEvidence(ctx context.Context, node string, refs []protocol.Evidence
 	if owned == nil || owned.Role != "benchmark" || owned.Cleaned {
 		return fmt.Errorf("raw export needs a tracked, running Lima benchmark node; use --raw-from for copied/manual evidence")
 	}
-	unlock, err := m.lock()
+	err = m.prepareDirectory()
 	if err != nil {
 		return err
 	}
-	defer unlock()
 	instances, err := m.instances(ctx)
 	if err != nil {
 		return err

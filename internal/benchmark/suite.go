@@ -8,7 +8,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"os/exec"
 	"path/filepath"
 	"strings"
@@ -107,7 +106,6 @@ func deploymentProfile(ctx context.Context, o planOptions, config json.RawMessag
 	}
 	// The serving module owns its configuration; the suite passes it through.
 	o.ModelID, o.ModelSHA256 = engine.Model.ID, engine.Model.SHA256
-	o.Binary = ""     // --binary selects the direct runtime; the serving module discovers its sibling.
 	o.Repetitions = 0 // Serving request counts belong to its configuration.
 	serving, err := servingProfile(ctx, o, config)
 	if err != nil {
@@ -176,25 +174,10 @@ func runSuite(ctx context.Context, p protocol.Plan, o Options) (result protocol.
 	if dir == "" {
 		dir = filepath.Join("results", o.RunID)
 	}
-	if err = prepareOutputDir(dir, o.Resume); err != nil {
+	if err = prepareOutputDir(dir); err != nil {
 		return result, dir, err
 	}
 	planFile := filepath.Join(dir, "plan.json")
-	if data, e := os.ReadFile(planFile); e == nil {
-		var previous protocol.Plan
-		if json.Unmarshal(data, &previous) != nil {
-			return result, dir, errors.New("invalid saved suite plan")
-		}
-		before, _ := json.Marshal(previous)
-		after, _ := json.Marshal(p)
-		if !bytes.Equal(before, after) {
-			return result, dir, errors.New("suite resume plan differs")
-		}
-	} else if !os.IsNotExist(e) {
-		return result, dir, e
-	} else if entries, e := os.ReadDir(dir); e != nil || len(entries) != 0 {
-		return result, dir, errors.New("unrecognized suite output directory")
-	}
 	if err = platform.WriteJSON(planFile, p, 0600); err != nil {
 		return result, dir, err
 	}
@@ -231,24 +214,11 @@ func runSuite(ctx context.Context, p protocol.Plan, o Options) (result protocol.
 		if err = ensureNodeIdle(ctx); err != nil {
 			return result, dir, err
 		}
+		o.log(fmt.Sprintf("Stage %d/%d: %s", i+1, len(suite.Stages), planKind(stage)))
 		stage.PlanID = p.PlanID
-		stageOptions := Options{RunID: fmt.Sprintf("%s-stage-%d", o.RunID, i+1), OutputDir: filepath.Join(dir, fmt.Sprintf("stage-%02d", i+1)), Resume: o.Resume}
-		var measured protocol.Result
-		if o.Resume {
-			if data, e := os.ReadFile(filepath.Join(stageOptions.OutputDir, "result.json")); e == nil {
-				if e = json.Unmarshal(data, &measured); e != nil {
-					return result, dir, e
-				}
-				if measured.RunID != stageOptions.RunID || measured.PlanID != stage.PlanID || measured.NodeID != p.NodeID || measured.ExecutionMode != p.ExecutionMode {
-					return result, dir, errors.New("saved stage belongs to another run")
-				}
-			} else if !os.IsNotExist(e) {
-				return result, dir, e
-			}
-		}
-		if measured.SchemaVersion == "" {
-			measured, _, err = implementations[planKind(stage)].run(ctx, stage, stageOptions)
-		}
+		stageOptions := Options{Log: o.Log, RunID: fmt.Sprintf("%s-stage-%d", o.RunID, i+1), OutputDir: filepath.Join(dir, fmt.Sprintf("stage-%02d", i+1))}
+
+		measured, _, err := implementations[planKind(stage)].run(ctx, stage, stageOptions)
 		report.Stages = append(report.Stages, measured)
 		if err != nil {
 			return result, dir, fmt.Errorf("stage %d: %w", i+1, err)
@@ -268,5 +238,6 @@ func runSuite(ctx context.Context, p protocol.Plan, o Options) (result protocol.
 			return result, dir, err
 		}
 	}
+	o.log("All benchmark stages completed")
 	return result, dir, nil
 }

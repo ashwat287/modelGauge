@@ -3,20 +3,15 @@ package agent
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
-	"net/http"
-	"net/http/httptest"
+	"github.com/nerdylucifer/modelgauge/internal/controller"
+	"github.com/nerdylucifer/modelgauge/internal/platform"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/nerdylucifer/modelgauge/internal/benchmark"
-	"github.com/nerdylucifer/modelgauge/internal/controller"
-	"github.com/nerdylucifer/modelgauge/internal/platform"
-	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 func TestRemoteWorkerHelper(t *testing.T) {
@@ -66,47 +61,6 @@ func fakeLimaWorker(t *testing.T) {
 	t.Setenv("PATH", dir+string(os.PathListSeparator)+os.Getenv("PATH"))
 	t.Setenv("MG_REMOTE_HELPER", "1")
 }
-func TestExternalExecutorUsesTargetHardwareAndInventory(t *testing.T) {
-	fakeLimaWorker(t)
-	t.Setenv("HOME", t.TempDir())
-	registered, synced := false, false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		switch {
-		case r.URL.Path == "/v1/nodes/register":
-			var v registerRequest
-			_ = json.NewDecoder(r.Body).Decode(&v)
-			if v.Hardware["hostname"] != "measured-vm" {
-				t.Error("executor host registered as target", v)
-			}
-			registered = true
-			w.WriteHeader(200)
-		case strings.HasSuffix(r.URL.Path, "/models"):
-			var v []controller.NodeModel
-			_ = json.NewDecoder(r.Body).Decode(&v)
-			if len(v) != 1 || v[0].Path != "/node-only/model.gguf" {
-				t.Error(v)
-			}
-			synced = true
-			w.WriteHeader(200)
-		default:
-			w.WriteHeader(204)
-		}
-	}))
-	defer server.Close()
-	c := Config{TargetVM: "benchmark-node", NodeID: "benchmark-node", ControllerURL: server.URL, Token: "private-controller-token", ResultsDir: t.TempDir()}
-	if worked, err := RunOnce(context.Background(), c); err != nil || worked || !registered || !synced {
-		t.Fatal(worked, err, registered, synced)
-	}
-	p := protocol.ExamplePlan()
-	p.PlanID = "job"
-	r, _, err := benchmarkTarget(context.Background(), c, p, benchmark.Options{RunID: "run-job", OutputDir: filepath.Join(c.ResultsDir, "run-job")})
-	if err != nil || r.RunID != "run-job" {
-		t.Fatal(r, err)
-	}
-	if _, err = os.Stat(filepath.Join(c.ResultsDir, "run-job/result.json")); err != nil {
-		t.Fatal(err)
-	}
-}
 func TestExternalCancellationStopsOnlyItsOwnedUnit(t *testing.T) {
 	fakeLimaWorker(t)
 	dir := t.TempDir()
@@ -144,69 +98,5 @@ func TestExternalCancellationStopsOnlyItsOwnedUnit(t *testing.T) {
 	data, err := os.ReadFile(stopped)
 	if err != nil || !strings.Contains(string(data), "modelgauge-worker-") {
 		t.Fatal("owned unit not stopped", string(data), err)
-	}
-}
-
-func TestCompletedUploadDoesNotRequireNodeConnection(t *testing.T) {
-	// No Lima binary or Linux host inspection is needed to upload saved results.
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("PATH", t.TempDir())
-	uploaded := false
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/complete") {
-			uploaded = true
-		}
-		w.WriteHeader(204)
-	}))
-	defer server.Close()
-	c := Config{TargetVM: "node", NodeID: "node", ControllerURL: server.URL, Token: "token", ResultsDir: t.TempDir()}
-	p := protocol.ExamplePlan()
-	p.NodeID = "node"
-	p.PlanID = "job"
-	pending := pendingJobForPlan(lease{PlanID: "job", Specification: p})
-	pending.Result = &protocol.Result{SchemaVersion: "benchmark-result/v1", RunID: "run-job", PlanID: "job", Status: protocol.RunStatusCompleted}
-	if err := savePending(c, &pending); err != nil {
-		t.Fatal(err)
-	}
-	if worked, err := RunOnce(context.Background(), c); err != nil || !worked || !uploaded {
-		t.Fatal(worked, uploaded, err)
-	}
-	if _, err := os.Stat(pendingPath(c)); !os.IsNotExist(err) {
-		t.Fatal("acknowledged journal retained", err)
-	}
-}
-
-func TestConnectionInterruptionRetainsPendingPlan(t *testing.T) {
-	fakeLimaWorker(t)
-	t.Setenv("HOME", t.TempDir())
-	t.Setenv("MG_REMOTE_INTERRUPTED", "1")
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if strings.HasSuffix(r.URL.Path, "/renew") {
-			_ = json.NewEncoder(w).Encode(controller.Renewal{ExpiresAt: time.Now().Add(time.Minute)})
-			return
-		}
-		if strings.HasSuffix(r.URL.Path, "/complete") {
-			t.Error("interrupted attempt uploaded as terminal")
-		}
-		w.WriteHeader(204)
-	}))
-	defer server.Close()
-	c := Config{TargetVM: "node", NodeID: "node", ControllerURL: server.URL, Token: "token", ResultsDir: t.TempDir(), ExecutionMode: protocol.ExecutionModeLima}
-	p := protocol.ExamplePlan()
-	p.NodeID = "node"
-	p.ExecutionMode = protocol.ExecutionModeLima
-	pending := pendingJobForPlan(lease{PlanID: "job", Specification: p, LeaseToken: "lease"})
-	if err := savePending(c, &pending); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := RunOnce(context.Background(), c); !errors.Is(err, errWorkerTransport) {
-		t.Fatal("interruption not recoverable", err)
-	}
-	recovered, err := loadPending(c)
-	if err != nil || recovered == nil || recovered.Result != nil {
-		t.Fatal("pending work was lost", recovered, err)
-	}
-	if _, err := os.Stat(filepath.Join(c.ResultsDir, "run-job/result.json")); !os.IsNotExist(err) {
-		t.Fatal("interrupted result cached as final", err)
 	}
 }

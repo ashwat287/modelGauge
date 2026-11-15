@@ -8,7 +8,6 @@ import (
 	"sort"
 	"strings"
 
-	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
@@ -92,11 +91,6 @@ func Run(ctx context.Context, plan protocol.Plan, options Options) (protocol.Res
 	if err := ValidatePlan(plan); err != nil {
 		return protocol.Result{}, "", err
 	}
-	unlock, err := platform.Lock("execution")
-	if err != nil {
-		return protocol.Result{}, "", err
-	}
-	defer unlock()
 	if err := ensureNodeIdle(ctx); err != nil {
 		return protocol.Result{}, "", err
 	}

@@ -3,8 +3,6 @@ package controller
 import (
 	"context"
 	"fmt"
-
-	"github.com/jackc/pgx/v5"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
@@ -18,7 +16,6 @@ type RunSummary struct {
 	ExecutionMode        string                    `json:"execution_mode"`
 	Status               string                    `json:"status"`
 	InvalidReason        string                    `json:"invalid_reason,omitempty"`
-	Recovered            bool                      `json:"recovered,omitempty"`
 	CompletedAt          string                    `json:"completed_at"`
 	PeakRSSBytes         int64                     `json:"peak_rss_bytes,omitempty"`
 	SafeReservationBytes int64                     `json:"safe_reservation_bytes,omitempty"`
@@ -52,130 +49,66 @@ type Recommendation struct {
 	AlgorithmVersion          string  `json:"algorithm_version"`
 }
 
-type resultQuerier interface {
-	Query(context.Context, string, ...any) (pgx.Rows, error)
-}
-
-func (s *Store) ListResults(ctx context.Context, nodeID string) ([]RunSummary, error) {
-	return listResults(ctx, s.pool, nodeID)
-}
-func listResults(ctx context.Context, q resultQuerier, nodeID string, selectedRun ...string) ([]RunSummary, error) {
-	runID := ""
-	if len(selectedRun) > 0 {
-		runID = selectedRun[0]
+func summary(r Record) RunSummary {
+	result := r.Result
+	out := RunSummary{RunID: result.RunID, PlanID: result.PlanID, NodeID: result.NodeID, ModelID: r.Plan.Model.ID, ExecutionMode: string(result.ExecutionMode), Status: string(result.Status), CompletedAt: result.CompletedAt.Format("2006-01-02T15:04:05Z"), Cases: []StoredCase{}, Benchmark: result.Benchmark}
+	for _, c := range result.Cases {
+		out.Cases = append(out.Cases, StoredCase(c))
 	}
-	rows, err := q.Query(ctx, `
-SELECT run.run_id, run.plan_id::text, run.node_id,
-       plan.specification #>> '{model,id}', run.execution_mode, run.status,
-       COALESCE(to_char(run.completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), ''),
-       COALESCE(memory.peak_rss_bytes, 0), COALESCE(memory.safe_reservation_bytes, 0),COALESCE(run.invalid_reason,''),COALESCE(run.runtime_metadata->>'recovered','false')='true',COALESCE(run.runtime_metadata->>'benchmark',''),COALESCE(run.runtime_metadata->>'serving','')
-FROM benchmark_runs run
-JOIN benchmark_plans plan ON plan.plan_id = run.plan_id
-LEFT JOIN memory_measurements memory ON memory.run_id = run.run_id
-WHERE run.node_id = $1 AND ($2='' OR run.run_id=$2) AND run.status IN ('completed', 'invalid', 'failed','cancelled')
-ORDER BY run.completed_at DESC`, nodeID, runID)
+	if result.Memory != nil {
+		out.PeakRSSBytes = result.Memory.PeakRSSBytes
+		out.SafeReservationBytes = result.Memory.SafeReservationBytes
+	}
+	return out
+}
+func (s *Store) ListResults(_ context.Context, node string) ([]RunSummary, error) {
+	records, err := s.Records()
 	if err != nil {
 		return nil, err
 	}
-	defer rows.Close()
-	results := []RunSummary{}
-	for rows.Next() {
-		var result RunSummary
-		var raw, legacy string
-		if err := rows.Scan(&result.RunID, &result.PlanID, &result.NodeID, &result.ModelID, &result.ExecutionMode, &result.Status, &result.CompletedAt, &result.PeakRSSBytes, &result.SafeReservationBytes, &result.InvalidReason, &result.Recovered, &raw, &legacy); err != nil {
-			return nil, err
+	out := []RunSummary{}
+	for _, r := range records {
+		if r.Result.NodeID == node {
+			out = append(out, summary(r))
 		}
-		result.Benchmark, err = protocol.DecodeStoredReport(raw, legacy)
-		if err != nil {
-			return nil, fmt.Errorf("invalid stored benchmark report: %w", err)
-		}
-		results = append(results, result)
 	}
-	err = rows.Err()
-	rows.Close()
-	if err != nil {
-		return nil, err
-	}
-	// A repeatable-read transaction uses one connection. Drain the run rows
-	// before issuing case queries rather than leaving that connection busy.
-	for i := range results {
-		cases, err := casesForRun(ctx, q, results[i].RunID)
-		if err != nil {
-			return nil, err
-		}
-		results[i].Cases = cases
-	}
-	return results, nil
+	return out, nil
 }
-
-func (s *Store) casesForRun(ctx context.Context, runID string) ([]StoredCase, error) {
-	return casesForRun(ctx, s.pool, runID)
-}
-func casesForRun(ctx context.Context, q resultQuerier, runID string) ([]StoredCase, error) {
-	rows, err := q.Query(ctx, `SELECT case_id, threads, prompt_tokens, generation_tokens, repetitions, average_tokens_per_second, stddev_tokens_per_second FROM benchmark_cases WHERE run_id = $1 ORDER BY case_id`, runID)
-	if err != nil {
-		return nil, err
-	}
-	defer rows.Close()
-	cases := []StoredCase{}
-	for rows.Next() {
-		var item StoredCase
-		if err := rows.Scan(&item.CaseID, &item.Threads, &item.PromptTokens, &item.GenerationTokens, &item.Repetitions, &item.TokensPerSecond, &item.TokensPerSecondStddev); err != nil {
-			return nil, err
-		}
-		cases = append(cases, item)
-	}
-	return cases, rows.Err()
-}
-
-func (s *Store) Recommend(ctx context.Context, nodeID, modelID, mode string, contextTokens int, memoryBudget int64) (Recommendation, error) {
-	var run RunSummary
-	err := s.pool.QueryRow(ctx, `
-SELECT run.run_id, run.plan_id::text, run.node_id, plan.specification #>> '{model,id}', run.execution_mode, run.status,
-       COALESCE(to_char(run.completed_at AT TIME ZONE 'UTC', 'YYYY-MM-DD"T"HH24:MI:SS"Z"'), ''),
-       COALESCE(memory.peak_rss_bytes, 0), COALESCE(memory.safe_reservation_bytes, 0)
-FROM benchmark_runs run
-JOIN benchmark_plans plan ON plan.plan_id = run.plan_id
-LEFT JOIN memory_measurements memory ON memory.run_id = run.run_id
-WHERE run.node_id = $1 AND plan.specification #>> '{model,id}' = $2 AND run.execution_mode = $3 AND run.status = 'completed'
-  AND EXISTS (SELECT 1 FROM benchmark_cases c WHERE c.run_id = run.run_id AND c.prompt_tokens = $4 AND c.generation_tokens = 0)
-ORDER BY run.completed_at DESC LIMIT 1`, nodeID, modelID, mode, contextTokens).Scan(&run.RunID, &run.PlanID, &run.NodeID, &run.ModelID, &run.ExecutionMode, &run.Status, &run.CompletedAt, &run.PeakRSSBytes, &run.SafeReservationBytes)
-	if err != nil {
-		if err == pgx.ErrNoRows {
-			return Recommendation{}, ErrNotFound
-		}
-		return Recommendation{}, err
-	}
-	run.Cases, err = s.casesForRun(ctx, run.RunID)
+func (s *Store) Recommend(ctx context.Context, node, model, mode string, contextTokens int, budget int64) (Recommendation, error) {
+	rows, err := s.ListResults(ctx, node)
 	if err != nil {
 		return Recommendation{}, err
 	}
-	recommendation := Recommendation{NodeID: nodeID, ModelID: modelID, ExecutionMode: mode, ContextTokens: contextTokens, RequiredMemoryBytes: run.SafeReservationBytes, MemoryBudgetBytes: memoryBudget, SourceRunID: run.RunID, AlgorithmVersion: "deterministic-v1"}
-	for _, item := range run.Cases {
-		if !stable(item) {
+	for _, run := range rows {
+		if run.ModelID != model || run.ExecutionMode != mode {
 			continue
 		}
-		if item.PromptTokens == contextTokens && item.GenerationTokens == 0 && item.TokensPerSecond > recommendation.PromptTokensPerSecond {
-			recommendation.PromptThreads, recommendation.PromptTokensPerSecond = item.Threads, item.TokensPerSecond
+		out := Recommendation{NodeID: node, ModelID: model, ExecutionMode: mode, ContextTokens: contextTokens, RequiredMemoryBytes: run.SafeReservationBytes, MemoryBudgetBytes: budget, SourceRunID: run.RunID, AlgorithmVersion: "deterministic-v1"}
+		for _, c := range run.Cases {
+			if c.TokensPerSecond <= 0 || c.TokensPerSecondStddev/c.TokensPerSecond > StabilityThreshold {
+				continue
+			}
+			if c.PromptTokens == contextTokens && c.GenerationTokens == 0 && c.TokensPerSecond > out.PromptTokensPerSecond {
+				out.PromptThreads = c.Threads
+				out.PromptTokensPerSecond = c.TokensPerSecond
+			}
+			if c.PromptTokens == 0 && c.GenerationTokens > 0 && c.TokensPerSecond > out.GenerationTokensPerSecond {
+				out.GenerationThreads = c.Threads
+				out.GenerationTokensPerSecond = c.TokensPerSecond
+			}
 		}
-		if item.PromptTokens == 0 && item.GenerationTokens > 0 && item.TokensPerSecond > recommendation.GenerationTokensPerSecond {
-			recommendation.GenerationThreads, recommendation.GenerationTokensPerSecond = item.Threads, item.TokensPerSecond
+		if out.PromptThreads == 0 || out.GenerationThreads == 0 {
+			continue
 		}
+		switch {
+		case budget == 0:
+			out.FitStatus = "conditional"
+		case out.RequiredMemoryBytes <= budget:
+			out.FitStatus = "fits"
+		default:
+			out.FitStatus = "does-not-fit"
+		}
+		return out, nil
 	}
-	if recommendation.PromptThreads == 0 || recommendation.GenerationThreads == 0 {
-		return Recommendation{}, fmt.Errorf("no stable prompt and generation measurements in run %s", run.RunID)
-	}
-	switch {
-	case memoryBudget == 0:
-		recommendation.FitStatus = "conditional"
-	case recommendation.RequiredMemoryBytes <= memoryBudget:
-		recommendation.FitStatus = "fits"
-	default:
-		recommendation.FitStatus = "does-not-fit"
-	}
-	return recommendation, nil
-}
-
-func stable(item StoredCase) bool {
-	return item.TokensPerSecond > 0 && item.TokensPerSecondStddev/item.TokensPerSecond <= StabilityThreshold
+	return Recommendation{}, fmt.Errorf("no stable completed measurements for model %s and context %d", model, contextTokens)
 }

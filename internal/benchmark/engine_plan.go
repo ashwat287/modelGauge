@@ -1,8 +1,6 @@
 package benchmark
 
 import (
-	"bytes"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"regexp"
@@ -10,19 +8,6 @@ import (
 
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
-
-func sameEngineResumePlan(previous, current protocol.Plan, binary string) bool {
-	// Older agents resolved the binary before saving the plan; discovery now belongs to the runner.
-	if previous.Runtime.Binary == "" {
-		previous.Runtime.Binary = binary
-	}
-	if current.Runtime.Binary == "" {
-		current.Runtime.Binary = binary
-	}
-	before, beforeErr := json.Marshal(previous)
-	after, afterErr := json.Marshal(current)
-	return beforeErr == nil && afterErr == nil && bytes.Equal(before, after)
-}
 
 var engineCaseID = regexp.MustCompile(`^[A-Za-z0-9][A-Za-z0-9_-]{0,95}$`)
 
@@ -65,7 +50,7 @@ func validateEnginePlan(p protocol.Plan) error {
 		problems = append(problems, fmt.Errorf("memory_case: %w", err))
 	}
 
-	files := map[string]bool{"plan.json": true, "result.json": true, "preflight.json": true, "postflight.json": true, "memory.checkpoint.json": true, "runtime.sha256": true}
+	files := map[string]bool{"plan.json": true, "result.json": true, "preflight.json": true, "postflight.json": true, "runtime.sha256": true}
 	names := []string{p.MemoryCase.ID + ".json", p.MemoryCase.ID + ".time.txt"}
 	for _, c := range p.Cases {
 		names = append(names, c.ID+".json", c.ID+"-warmup.json")

@@ -12,32 +12,16 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/control"
-	"github.com/nerdylucifer/modelgauge/internal/releases"
 )
 
 func runControl(ctx context.Context, args []string, out, stderr io.Writer) int {
 	if len(args) == 0 {
-		fmt.Fprintln(stderr, "usage: modelgauge control <bootstrap|status>")
+		fmt.Fprintln(stderr, "usage: modelgauge control bootstrap")
 		return 2
 	}
-	if args[0] == "status" {
-		ctx, cancel := context.WithTimeout(ctx, 45*time.Second)
-		defer cancel()
-		c, err := control.Load()
-		if err != nil {
-			fmt.Fprintf(stderr, "load control configuration: %v\n", err)
-			return 1
-		}
-		if err = control.Status(ctx, c, out); err != nil {
-			fmt.Fprintln(stderr, err)
-			return 1
-		}
-		return 0
-	}
 	if args[0] != "bootstrap" {
-		fmt.Fprintln(stderr, "usage: modelgauge control <bootstrap|status>")
+		fmt.Fprintln(stderr, "usage: modelgauge control bootstrap")
 		return 2
 	}
 	f := flag.NewFlagSet("control bootstrap", flag.ContinueOnError)
@@ -55,13 +39,10 @@ func runControl(ctx context.Context, args []string, out, stderr io.Writer) int {
 		}
 	}
 	name := f.String("name", defaultName, "Lima VM name (default: active control VM, or modelgauge-control)")
-	image := f.String("image", "", "published controller image")
-	source := f.String("source", "", "build a controller image from this Go repository")
-	helper := f.String("helper-binary", "", "matching Linux executable for Go guest helpers (development --image without source)")
 	version := f.String("k3s-version", "v1.37.1+k3s1", "k3s version for new installs")
 	cpus := f.Int("cpus", 4, "VM CPUs")
 	memory := f.Int("memory", 6, "VM memory GiB")
-	port := f.Int("port", defaultPort, "local controller port (use a different port for a second control VM)")
+	port := f.Int("port", defaultPort, "local controller port")
 	disk := f.Int("disk", 50, "VM disk GiB")
 	benchmark := f.String("benchmark-target", "", "optional benchmark node exporter host:port")
 	if err := f.Parse(args[1:]); err != nil {
@@ -81,27 +62,12 @@ func runControl(ctx context.Context, args []string, out, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "minimum control VM: 2 CPUs, 3 GiB memory, 16 GiB disk")
 		return 2
 	}
-	if *source == "" && *image == "" {
-		if buildinfo.Released() {
-			manifest, err := releases.Load(ctx)
-			if err != nil {
-				fmt.Fprintf(stderr, "resolve matching controller release: %v\n", err)
-				return 1
-			}
-			*image = manifest.ControllerImage
-		} else if _, err := os.Stat("go.mod"); err == nil {
-			*source = "."
-		} else {
-			fmt.Fprintln(stderr, "provide --image IMAGE for a published controller, or --source REPO to build locally")
-			return 2
-		}
-	}
-	c, err := control.Bootstrap(ctx, control.Options{ReadinessTimeout: *readiness, Name: *name, Image: *image, Source: *source, HelperBinary: *helper, K3sVersion: *version, CPUs: *cpus, MemoryGiB: *memory, DiskGiB: *disk, Port: *port, BenchmarkTarget: *benchmark, Log: stderr})
+	c, err := control.Bootstrap(ctx, control.Options{ReadinessTimeout: *readiness, Name: *name, K3sVersion: *version, CPUs: *cpus, MemoryGiB: *memory, DiskGiB: *disk, Port: *port, BenchmarkTarget: *benchmark, Log: stderr})
 	if err != nil {
 		fmt.Fprintf(stderr, "bootstrap: %v\n", err)
 		return 1
 	}
-	fmt.Fprintf(out, "✅ Control plane ready: %s\nConnection details saved privately. Run modelgauge control status.\n", c.ControllerURL)
+	fmt.Fprintf(out, "✅ Control plane ready: %s\nConnection details saved privately.\n", c.ControllerURL)
 	return 0
 }
 
@@ -144,4 +110,26 @@ func loadControlEnvironment() {
 			_ = os.Setenv(key, value)
 		}
 	}
+}
+
+func runSetup(ctx context.Context, args []string, out, stderr io.Writer) int {
+	f := flag.NewFlagSet("setup", flag.ContinueOnError)
+	setFlagOutput(f, stderr)
+	controlMemory := f.Int("control-memory", 6, "control VM RAM in GiB")
+	nodeMemory := f.Int("node-memory", 3, "benchmark VM RAM in GiB")
+	nodeCPUs := f.Int("node-cpus", 2, "benchmark VM CPUs")
+	if err := f.Parse(args); err != nil {
+		return flagExitCode(err)
+	}
+	if f.NArg() != 0 {
+		fmt.Fprintln(stderr, "setup accepts flags only")
+		return 2
+	}
+	controlArgs := []string{"bootstrap", "--memory", strconv.Itoa(*controlMemory)}
+	nodeArgs := []string{"--memory", strconv.Itoa(*nodeMemory), "--cpus", strconv.Itoa(*nodeCPUs)}
+	if code := runControl(ctx, controlArgs, out, stderr); code != 0 {
+		return code
+	}
+	loadControlEnvironment()
+	return bootstrapNode(ctx, nodeArgs, out, stderr)
 }

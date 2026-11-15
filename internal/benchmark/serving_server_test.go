@@ -167,15 +167,15 @@ func TestManagedServingProfileAndUnknownConfiguration(t *testing.T) {
 	}
 }
 
-func TestManagedServingRunMeasuresProcessAndRestartsOnResume(t *testing.T) {
+func TestManagedServingRunMeasuresProcess(t *testing.T) {
 	if runtime.GOOS != "linux" {
 		t.Skip("agent workloads execute on Linux")
 	}
 	t.Setenv("HOME", t.TempDir())
 	plan, _ := managedModelFixture(t)
 	dir := filepath.Join(t.TempDir(), "evidence")
-	for i := 0; i < 2; i++ {
-		result, _, err := Run(context.Background(), plan, Options{OutputDir: dir, Resume: i > 0})
+	{
+		result, _, err := Run(context.Background(), plan, Options{OutputDir: dir})
 		if err != nil {
 			t.Fatal(err)
 		}
@@ -183,12 +183,7 @@ func TestManagedServingRunMeasuresProcessAndRestartsOnResume(t *testing.T) {
 		if result.Status != protocol.RunStatusCompleted || report.StartupMS == nil || report.ShutdownMS == nil || report.Cases[0].Resources.SampledPeakRSSBytes == nil || report.Cases[0].Resources.CPUSeconds == nil {
 			t.Fatal(result, report)
 		}
-		if i > 0 {
-			archived, _ := filepath.Glob(filepath.Join(dir, "load.requests.jsonl.interrupted-*"))
-			if len(archived) != 1 {
-				t.Fatal("previous evidence not archived", archived)
-			}
-		}
+
 	}
 }
 

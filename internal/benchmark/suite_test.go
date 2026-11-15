@@ -1,6 +1,7 @@
 package benchmark
 
 import (
+	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -38,7 +39,7 @@ func TestDeploymentPlanUsesOneModelAndOrderedStages(t *testing.T) {
 		t.Fatal("nested suite accepted")
 	}
 }
-func TestSuiteHoldsOneLockStopsOnFailureAndResumesCompletedStages(t *testing.T) {
+func TestSuiteRunsSequentiallyAndStopsOnFailure(t *testing.T) {
 	for _, mode := range []string{"success", "failure", "cancel"} {
 		t.Run(mode, func(t *testing.T) {
 			t.Setenv("HOME", t.TempDir())
@@ -48,10 +49,6 @@ func TestSuiteHoldsOneLockStopsOnFailureAndResumesCompletedStages(t *testing.T) 
 			defer cancel()
 			const kind = "suite-test-module"
 			implementations[kind] = implementation{run: func(ctx context.Context, p protocol.Plan, o Options) (protocol.Result, string, error) {
-				if unlock, err := platform.Lock("execution"); err == nil {
-					unlock()
-					t.Fatal("whole-suite lock was not held")
-				}
 				var config struct {
 					ID string `json:"id"`
 				}
@@ -82,8 +79,12 @@ func TestSuiteHoldsOneLockStopsOnFailureAndResumesCompletedStages(t *testing.T) 
 			p := base
 			p.Runtime.Kind = "suite"
 			_ = setConfig(&p, "suite", suitePlan{Stages: []protocol.Plan{first, second, third}})
-			o := Options{RunID: "run-test", OutputDir: filepath.Join(t.TempDir(), "run"), Resume: true}
+			var log bytes.Buffer
+			o := Options{Log: &log, RunID: "run-test", OutputDir: filepath.Join(t.TempDir(), "run")}
 			r, _, err := Run(ctx, p, o)
+			if !strings.Contains(log.String(), "Stage 1/3") || !strings.Contains(log.String(), "Stage 2/3") {
+				t.Fatal("stage progress missing", log.String())
+			}
 			if mode == "success" {
 				if err != nil || strings.Join(calls, ",") != "first,second,third" || len(r.Cases) != 3 {
 					t.Fatal(r, calls, err)
@@ -97,13 +98,7 @@ func TestSuiteHoldsOneLockStopsOnFailureAndResumesCompletedStages(t *testing.T) 
 			if err == nil || strings.Join(calls, ",") != "first,second" {
 				t.Fatal("later stage ran after failure", calls, err)
 			}
-			// An interrupted suite can resume, but never reruns a completed stage.
-			secondFails = false
-			calls = nil
-			r, _, err = Run(context.Background(), p, o)
-			if err != nil || strings.Join(calls, ",") != "second,third" || r.Status != protocol.RunStatusCompleted {
-				t.Fatal(r, calls, err)
-			}
+
 		})
 	}
 }

@@ -9,18 +9,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"regexp"
 	"time"
 
-	"github.com/nerdylucifer/modelgauge/internal/benchmark"
 	"github.com/nerdylucifer/modelgauge/internal/controller"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
-// workerRequest contains no controller credentials or controller-specific lease data.
+// workerRequest contains no controller credentials or persistent job state.
 type workerRequest struct {
 	Operation string         `json:"operation"`
 	RunID     string         `json:"run_id,omitempty"`
@@ -30,11 +27,54 @@ type workerRequest struct {
 	SHA256    string         `json:"sha256,omitempty"`
 }
 type workerResponse struct {
+	Progress    string                 `json:"progress,omitempty"`
 	Host        platform.Host          `json:"host,omitempty"`
 	Models      []controller.NodeModel `json:"models,omitempty"`
 	Result      protocol.Result        `json:"result,omitempty"`
 	Error       string                 `json:"error,omitempty"`
 	Interrupted bool                   `json:"interrupted,omitempty"`
+}
+
+type Config struct {
+	TargetVM string
+	SSH      *SSHConnection
+	Log      io.Writer
+}
+
+// workerStream forwards progress frames and retains only the final response.
+type workerStream struct {
+	buffer []byte
+	final  []byte
+	log    io.Writer
+}
+
+func (s *workerStream) Write(p []byte) (int, error) {
+	s.buffer = append(s.buffer, p...)
+	if len(s.buffer) > 16<<20 {
+		return 0, errors.New("worker frame exceeds 16 MiB")
+	}
+	for {
+		i := bytes.IndexByte(s.buffer, '\n')
+		if i < 0 {
+			break
+		}
+		frame := s.buffer[:i]
+		var response workerResponse
+		if err := json.Unmarshal(frame, &response); err != nil {
+			return 0, err
+		}
+		if response.Progress != "" {
+			if s.log != nil {
+				if _, err := io.WriteString(s.log, response.Progress); err != nil {
+					return 0, err
+				}
+			}
+		} else {
+			s.final = append(s.final[:0], frame...)
+		}
+		s.buffer = s.buffer[i+1:]
+	}
+	return len(p), nil
 }
 
 var errWorkerTransport = errors.New("node connection interrupted")
@@ -52,7 +92,7 @@ func remoteWork(ctx context.Context, c Config, request workerRequest) (workerRes
 	}
 	unit := "modelgauge-worker-" + hex.EncodeToString(random)
 	if c.SSH != nil {
-		return c.SSH.work(ctx, request, unit)
+		return c.SSH.work(ctx, request, unit, c.Log)
 	}
 	script := `exec systemd-run --user --quiet --pipe --wait --collect --unit=` + unit + ` --property=KillMode=control-group --property=TimeoutStopSec=5s --property=RuntimeMaxSec=24h -- "$HOME/.local/bin/modelgauge" _guest worker`
 	command := platform.CommandContext(ctx, "limactl", "shell", "--workdir", "/", c.TargetVM, "--", "sh", "-c", script)
@@ -61,7 +101,8 @@ func remoteWork(ctx context.Context, c Config, request workerRequest) (workerRes
 		return response, pipeErr
 	}
 	defer writer.Close()
-	var stdout, stderr limitedBuffer
+	stdout := workerStream{log: c.Log}
+	var stderr limitedBuffer
 	command.Stdout = &stdout
 	command.Stderr = &stderr
 	if err := command.Start(); err != nil {
@@ -77,7 +118,7 @@ func remoteWork(ctx context.Context, c Config, request workerRequest) (workerRes
 		stop()
 		return response, errors.Join(fmt.Errorf("%w: node worker: %v: %s", errWorkerTransport, err, stderr.String()), cleanupErr)
 	}
-	return decodeWorkerResponse(stdout.Bytes())
+	return decodeWorkerResponse(stdout.final)
 }
 func decodeWorkerResponse(data []byte) (workerResponse, error) {
 	var response workerResponse
@@ -100,36 +141,6 @@ func (b *limitedBuffer) Write(p []byte) (int, error) {
 		return 0, errors.New("worker output exceeds 16 MiB")
 	}
 	return b.Buffer.Write(p)
-}
-
-func inspectTarget(ctx context.Context, c Config) (platform.Host, []controller.NodeModel, error) {
-	if c.TargetVM != "" || c.SSH != nil {
-		r, err := remoteWork(ctx, c, workerRequest{Operation: "inspect"})
-		return r.Host, r.Models, err
-	}
-	return inspectLocal(ctx)
-}
-func installTarget(ctx context.Context, c Config, j *controller.InstallJob) error {
-	if c.TargetVM == "" && c.SSH == nil {
-		return installLocal(ctx, j)
-	}
-	_, err := remoteWork(ctx, c, workerRequest{Operation: "install", ModelID: j.ModelID, SourceURL: j.SourceURL, SHA256: j.SHA256})
-	return err
-}
-func benchmarkTarget(ctx context.Context, c Config, p protocol.Plan, o benchmark.Options) (protocol.Result, string, error) {
-	if c.TargetVM == "" && c.SSH == nil {
-		return benchmark.Run(ctx, p, o)
-	}
-	r, err := remoteWork(ctx, c, workerRequest{Operation: "benchmark", RunID: o.RunID, Plan: &p})
-	if ctx.Err() == nil && !errors.Is(err, errWorkerTransport) && r.Result.SchemaVersion != "" {
-		if e := os.MkdirAll(o.OutputDir, 0700); e != nil {
-			return r.Result, o.OutputDir, e
-		}
-		if e := platform.WriteJSON(filepath.Join(o.OutputDir, "result.json"), r.Result, 0600); e != nil {
-			return r.Result, o.OutputDir, e
-		}
-	}
-	return r.Result, o.OutputDir, err
 }
 
 func exchangeWorker(ctx context.Context, request workerRequest, writer io.WriteCloser, wait func() error) error {

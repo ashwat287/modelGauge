@@ -7,13 +7,9 @@ import (
 	"io"
 	"net/http"
 	"net/http/httptest"
-	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 	"time"
-
-	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 func TestWorkerCancelsDownloadOnLostAuthorization(t *testing.T) {
@@ -125,33 +121,5 @@ func TestWorkerKeepsAuthorizationAlive(t *testing.T) {
 	_ = json.Unmarshal(out.Bytes(), &response)
 	if response.Error != "" {
 		t.Fatal(response.Error)
-	}
-}
-func TestWorkerReturnsCompletedEvidenceWithoutRerunning(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	plan := protocol.ExamplePlan()
-	plan.PlanID = "job"
-	plan.NodeID = "node"
-	dir := filepath.Join(home, ".local/share/modelgauge/results/run-job")
-	if err := os.MkdirAll(dir, 0700); err != nil {
-		t.Fatal(err)
-	}
-	saved, _ := json.Marshal(plan)
-	if err := os.WriteFile(filepath.Join(dir, "plan.json"), saved, 0600); err != nil {
-		t.Fatal(err)
-	}
-	data, _ := json.Marshal(protocol.Result{SchemaVersion: "benchmark-result/v1", RunID: "run-job", PlanID: "job", Status: protocol.RunStatusCompleted})
-	if err := os.WriteFile(filepath.Join(dir, "result.json"), data, 0600); err != nil {
-		t.Fatal(err)
-	}
-	response := executeWorker(context.Background(), workerRequest{Operation: "benchmark", RunID: "run-job", Plan: &plan})
-	if response.Error != "" || response.Result.Status != protocol.RunStatusCompleted {
-		t.Fatal(response)
-	}
-	for _, id := range []string{"../outside", "run-../../outside", ""} {
-		if r := executeWorker(context.Background(), workerRequest{Operation: "benchmark", RunID: id, Plan: &plan}); r.Error == "" {
-			t.Fatal("unsafe worker run ID accepted", id)
-		}
 	}
 }

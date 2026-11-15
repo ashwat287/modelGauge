@@ -6,6 +6,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"os"
 	"os/exec"
 	"path/filepath"
@@ -40,7 +41,7 @@ type llamaBenchResult struct {
 
 // Options controls local artifact naming.
 type Options struct {
-	Resume    bool
+	Log       io.Writer
 	RunID     string
 	OutputDir string
 }
@@ -74,38 +75,17 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 	if outputDir == "" {
 		outputDir = filepath.Join("results", runID)
 	}
-	if err := prepareOutputDir(outputDir, options.Resume); err != nil {
+	if err := prepareOutputDir(outputDir); err != nil {
 		return protocol.Result{}, outputDir, err
 	}
 
 	planPath := filepath.Join(outputDir, "plan.json")
-	recovered := false
-	if options.Resume {
-		if data, err := os.ReadFile(planPath); err == nil {
-			recovered = true
-			var previous protocol.Plan
-			if err = json.Unmarshal(data, &previous); err != nil {
-				return protocol.Result{}, outputDir, err
-			}
-			if !sameEngineResumePlan(previous, plan, binary) {
-				return protocol.Result{}, outputDir, fmt.Errorf("resume plan does not match saved plan")
-			}
-		} else if !os.IsNotExist(err) {
-			return protocol.Result{}, outputDir, err
-		} else if entries, e := os.ReadDir(outputDir); e != nil || len(entries) != 0 {
-			return protocol.Result{}, outputDir, fmt.Errorf("refusing to resume an unrecognized nonempty output directory")
-		}
-	}
 	binaryHash, err := platform.SHA256File(ctx, binary)
 	if err != nil {
 		return protocol.Result{}, outputDir, err
 	}
 	hashPath := filepath.Join(outputDir, "runtime.sha256")
-	if options.Resume {
-		if data, err := os.ReadFile(hashPath); err == nil && string(data) != binaryHash {
-			return protocol.Result{}, outputDir, fmt.Errorf("runtime changed since interrupted run")
-		}
-	}
+
 	if err := writeJSON(planPath, plan); err != nil {
 		return protocol.Result{}, outputDir, err
 	}
@@ -116,11 +96,7 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 	if err != nil {
 		return protocol.Result{}, outputDir, err
 	}
-	if options.Resume {
-		if data, err := os.ReadFile(filepath.Join(outputDir, "preflight.json")); err == nil {
-			_ = json.Unmarshal(data, &preflight)
-		}
-	}
+
 	if err := writeJSON(filepath.Join(outputDir, "preflight.json"), preflight); err != nil {
 		return protocol.Result{}, outputDir, err
 	}
@@ -128,22 +104,21 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 	startedAt := preflight.CapturedAt
 	cases := make([]protocol.CaseResult, 0, len(plan.Cases))
 	for _, benchmarkCase := range plan.Cases {
+		options.log("Direct benchmark: " + benchmarkCase.ID)
 		measuredPath := filepath.Join(outputDir, benchmarkCase.ID+".json")
-		parsed, parseErr := parseLlamaBench(measuredPath)
-		cached := options.Resume && parseErr == nil && parsed.Threads == benchmarkCase.Threads && parsed.Prompt == benchmarkCase.PromptTokens && parsed.Generation == benchmarkCase.GenerationTokens && len(parsed.SamplesTS) == plan.Defaults.MeasureRepetitions
-		if !cached {
-			warmupPath := filepath.Join(outputDir, benchmarkCase.ID+"-warmup.json")
-			if err := runLlamaBench(ctx, binary, plan, benchmarkCase.Threads, benchmarkCase.PromptTokens, benchmarkCase.GenerationTokens, plan.Defaults.WarmupRepetitions, warmupPath); err != nil {
-				return protocol.Result{}, outputDir, fmt.Errorf("warm up %s: %w", benchmarkCase.ID, err)
-			}
 
-			if err := runLlamaBench(ctx, binary, plan, benchmarkCase.Threads, benchmarkCase.PromptTokens, benchmarkCase.GenerationTokens, plan.Defaults.MeasureRepetitions, measuredPath); err != nil {
-				return protocol.Result{}, outputDir, fmt.Errorf("measure %s: %w", benchmarkCase.ID, err)
-			}
-			parsed, err = parseLlamaBench(measuredPath)
-			if err != nil {
-				return protocol.Result{}, outputDir, fmt.Errorf("parse %s: %w", benchmarkCase.ID, err)
-			}
+		options.log("Warmup: " + benchmarkCase.ID)
+		warmupPath := filepath.Join(outputDir, benchmarkCase.ID+"-warmup.json")
+		if err := runLlamaBench(ctx, binary, plan, benchmarkCase.Threads, benchmarkCase.PromptTokens, benchmarkCase.GenerationTokens, plan.Defaults.WarmupRepetitions, warmupPath); err != nil {
+			return protocol.Result{}, outputDir, fmt.Errorf("warm up %s: %w", benchmarkCase.ID, err)
+		}
+
+		if err := runLlamaBench(ctx, binary, plan, benchmarkCase.Threads, benchmarkCase.PromptTokens, benchmarkCase.GenerationTokens, plan.Defaults.MeasureRepetitions, measuredPath); err != nil {
+			return protocol.Result{}, outputDir, fmt.Errorf("measure %s: %w", benchmarkCase.ID, err)
+		}
+		parsed, err := parseLlamaBench(measuredPath)
+		if err != nil {
+			return protocol.Result{}, outputDir, fmt.Errorf("parse %s: %w", benchmarkCase.ID, err)
 		}
 		cases = append(cases, protocol.CaseResult{
 			CaseID:                benchmarkCase.ID,
@@ -156,19 +131,8 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 		})
 	}
 
-	var memory *protocol.MemoryResult
-	checkpoint := filepath.Join(outputDir, "memory.checkpoint.json")
-	if options.Resume {
-		if data, err := os.ReadFile(checkpoint); err == nil {
-			_ = json.Unmarshal(data, &memory)
-		}
-	}
-	if memory == nil || memory.CaseID != plan.MemoryCase.ID || memory.PeakRSSBytes <= 0 {
-		memory, err = runMemoryCase(ctx, binary, plan, outputDir)
-		if err == nil {
-			err = writeJSON(checkpoint, memory)
-		}
-	}
+	options.log("Measuring peak resident memory")
+	memory, err := runMemoryCase(ctx, binary, plan, outputDir)
 	if err != nil {
 		return protocol.Result{}, outputDir, err
 	}
@@ -192,10 +156,10 @@ func runEnginePlan(ctx context.Context, plan protocol.Plan, options Options) (pr
 		Cases:         cases,
 		Memory:        memory,
 		RuntimeMetadata: map[string]string{
-			"recovered": fmt.Sprint(recovered),
-			"binary":    binary,
-			"goos":      runtime.GOOS,
-			"goarch":    runtime.GOARCH,
+
+			"binary": binary,
+			"goos":   runtime.GOOS,
+			"goarch": runtime.GOARCH,
 		},
 	}
 	artifacts, err := collectArtifacts(outputDir)
@@ -412,13 +376,13 @@ func collectArtifacts(root string) ([]protocol.Artifact, error) {
 	return artifacts, nil
 }
 
-func prepareOutputDir(path string, resume bool) error {
+func prepareOutputDir(path string) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0750); err != nil {
 		return err
 	}
 	err := os.Mkdir(path, 0750)
-	if err != nil && !(resume && os.IsExist(err)) {
-		return fmt.Errorf("output must be a new directory unless resuming: %w", err)
+	if err != nil {
+		return fmt.Errorf("output must be a new directory: %w", err)
 	}
 	info, err := os.Lstat(path)
 	if err != nil {
@@ -428,4 +392,10 @@ func prepareOutputDir(path string, resume bool) error {
 		return fmt.Errorf("output must be a real directory")
 	}
 	return nil
+}
+
+func (o Options) log(message string) {
+	if o.Log != nil {
+		fmt.Fprintf(o.Log, "%s %s\n", time.Now().UTC().Format(time.RFC3339Nano), message)
+	}
 }

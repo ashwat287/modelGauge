@@ -3,7 +3,6 @@ package modelcache
 
 import (
 	"context"
-	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
 	"fmt"
@@ -156,11 +155,6 @@ func InstallContext(ctx context.Context, id, sourceURL, expectedSHA string) (Mod
 }
 
 func installAt(ctx context.Context, id, sourceURL, expectedSHA, directory string) (Model, error) {
-	unlock, err := platform.Lock("execution")
-	if err != nil {
-		return Model{}, err
-	}
-	defer unlock()
 	if err := ValidateID(id); err != nil {
 		return Model{}, err
 	}
@@ -183,78 +177,23 @@ func installAt(ctx context.Context, id, sourceURL, expectedSHA, directory string
 	if err := ctx.Err(); err != nil {
 		return Model{}, err
 	}
-	partialPath := finalPath + ".part"
-	if expectedSHA != "" {
-		if digest, err := platform.SHA256File(ctx, partialPath); err == nil && strings.EqualFold(digest, expectedSHA) {
-			if err = os.Rename(partialPath, finalPath); err != nil {
-				return Model{}, err
-			}
-			info, err := os.Stat(finalPath)
-			if err != nil {
-				return Model{}, err
-			}
-			return Model{ID: id, SHA256: digest, SizeBytes: info.Size(), Path: finalPath}, nil
-		}
-	}
-	identity := struct {
-		SourceSHA256   string `json:"source_sha256"`
-		ExpectedSHA256 string `json:"expected_sha256"`
-	}{SourceSHA256: fmt.Sprintf("%x", sha256.Sum256([]byte(sourceURL))), ExpectedSHA256: expectedSHA}
-	identityPath := partialPath + ".meta.json"
-	if info, e := os.Stat(partialPath); e == nil && info.Size() > 0 {
-		data, e := os.ReadFile(identityPath)
-		var previous struct {
-			SourceSHA256   string `json:"source_sha256"`
-			ExpectedSHA256 string `json:"expected_sha256"`
-		}
-		if e != nil || json.Unmarshal(data, &previous) != nil || previous.SourceSHA256 != identity.SourceSHA256 || previous.ExpectedSHA256 != identity.ExpectedSHA256 {
-			return Model{}, fmt.Errorf("partial download source identity is missing or differs; preserve it and use a new model ID or inspect the partial data")
-		}
-	}
-	if err := platform.WriteJSON(identityPath, identity, 0600); err != nil {
-		return Model{}, err
-	}
-	var offset int64
-	if info, err := os.Stat(partialPath); err == nil {
-		offset = info.Size()
-	}
-	req, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
+	request, err := http.NewRequestWithContext(ctx, http.MethodGet, sourceURL, nil)
 	if err != nil {
 		return Model{}, err
 	}
-	if expectedSHA == "" {
-		offset = 0
-	} // A URL alone cannot prove the identity of a resumed representation.
-	if offset > 0 {
-		req.Header.Set("Range", "bytes="+fmt.Sprint(offset)+"-")
-	}
-	response, err := http.DefaultClient.Do(req)
+	response, err := http.DefaultClient.Do(request)
 	if err != nil {
 		return Model{}, err
 	}
 	defer response.Body.Close()
-	if response.StatusCode != http.StatusOK && response.StatusCode != http.StatusPartialContent {
+	if response.StatusCode != http.StatusOK {
 		return Model{}, fmt.Errorf("download model: %s", response.Status)
 	}
-	if response.StatusCode == http.StatusOK {
-		offset = 0
-	}
-	if response.StatusCode == http.StatusPartialContent {
-		var start int64
-		if _, err = fmt.Sscanf(response.Header.Get("Content-Range"), "bytes %d-", &start); err != nil || start != offset {
-			return Model{}, fmt.Errorf("invalid resumed download range")
-		}
-	}
-	flags := os.O_CREATE | os.O_WRONLY
-	if offset > 0 {
-		flags |= os.O_APPEND
-	} else {
-		flags |= os.O_TRUNC
-	}
-	output, err := os.OpenFile(partialPath, flags, 0o640)
+	output, err := os.CreateTemp(directory, ".download-*")
 	if err != nil {
 		return Model{}, err
 	}
+	defer os.Remove(output.Name())
 	_, copyErr := io.Copy(output, response.Body)
 	syncErr := output.Sync()
 	closeErr := output.Close()
@@ -267,18 +206,16 @@ func installAt(ctx context.Context, id, sourceURL, expectedSHA, directory string
 	if closeErr != nil {
 		return Model{}, closeErr
 	}
-	digest, err := platform.SHA256File(ctx, partialPath)
+	digest, err := platform.SHA256File(ctx, output.Name())
 	if err != nil {
 		return Model{}, err
 	}
 	if expectedSHA != "" && !strings.EqualFold(expectedSHA, digest) {
-		_ = os.Rename(partialPath, partialPath+".checksum-failed")
 		return Model{}, fmt.Errorf("SHA-256 mismatch for %s", id)
 	}
-	if err := os.Rename(partialPath, finalPath); err != nil {
+	if err = os.Rename(output.Name(), finalPath); err != nil {
 		return Model{}, err
 	}
-	_ = os.Remove(identityPath)
 	info, err := os.Stat(finalPath)
 	if err != nil {
 		return Model{}, err

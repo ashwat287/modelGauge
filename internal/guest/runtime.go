@@ -22,7 +22,6 @@ import (
 	"sort"
 	"strconv"
 	"strings"
-	"syscall"
 )
 
 const HelperRelative = ".local/share/modelgauge/guest-helper"
@@ -32,16 +31,15 @@ var ownerPattern = regexp.MustCompile(`^[a-f0-9]{32}$`)
 var forwardPattern = regexp.MustCompile(`^\.config/systemd/user/modelgauge-forward-[0-9]{4,5}\.service$`)
 
 type Request struct {
-	AllowQueued bool     `json:"allow_queued,omitempty"`
-	CheckIdle   bool     `json:"check_idle,omitempty"`
-	ID          string   `json:"id"`
-	Role        string   `json:"role"`
-	Operation   string   `json:"operation"`
-	Files       []string `json:"files"`
-	MachineID   string   `json:"machine_id"`
-	Cleaned     bool     `json:"cleaned"`
-	Prepared    bool     `json:"prepared"`
-	Unprepared  bool     `json:"unprepared"`
+	CheckIdle  bool     `json:"check_idle,omitempty"`
+	ID         string   `json:"id"`
+	Role       string   `json:"role"`
+	Operation  string   `json:"operation"`
+	Files      []string `json:"files"`
+	MachineID  string   `json:"machine_id"`
+	Cleaned    bool     `json:"cleaned"`
+	Prepared   bool     `json:"prepared"`
+	Unprepared bool     `json:"unprepared"`
 }
 type State struct {
 	PendingHelperSHA256 string                 `json:"pending_helper_sha256,omitempty"`
@@ -351,7 +349,9 @@ func (r Runtime) active(ctx context.Context) error {
 	}
 	return nil
 }
-func (r Runtime) checkJobs(ctx context.Context, includeQueued bool) error {
+
+// Controller health exposes only whether a foreground operation is active.
+func (r Runtime) checkJobs(ctx context.Context) error {
 	path, err := r.safePath(".kube/modelgauge-config")
 	if err != nil {
 		return err
@@ -359,68 +359,19 @@ func (r Runtime) checkJobs(ctx context.Context, includeQueued bool) error {
 	if !exists(path) {
 		return nil
 	}
-	if r.Run == nil {
-		return fmt.Errorf("guest command runner unavailable")
-	}
 	env := []string{"KUBECONFIG=" + path}
-	probe, err := r.Run(ctx, []string{"kubectl", "--request-timeout=10s", "-n", "benchmark-data", "get", "pod", "benchmark-postgres-0", "--ignore-not-found", "-o", "name"}, env)
+	probe, err := r.Run(ctx, []string{"kubectl", "--request-timeout=10s", "-n", "benchmark-system", "get", "deployment", "modelgauge-controller", "--ignore-not-found", "-o", "name"}, env)
 	if err != nil {
-		return fmt.Errorf("cannot verify control job state: %w", err)
+		return fmt.Errorf("cannot verify controller activity: %w", err)
 	}
 	if strings.TrimSpace(string(probe)) == "" {
 		return nil
 	}
-	states := "'leased','running'"
-	if includeQueued {
-		states += ",'queued'"
-	}
-	sql := "SELECT count(*) FROM benchmark_plans WHERE status IN (" + states + "); SELECT count(*) FROM model_install_jobs WHERE status IN (" + states + ");"
-	counts, err := r.Run(ctx, []string{"kubectl", "--request-timeout=10s", "-n", "benchmark-data", "exec", "benchmark-postgres-0", "--", "psql", "-U", "benchmark_app", "-d", "benchmark", "-Atc", sql}, env)
+	_, err = r.Run(ctx, []string{"kubectl", "--request-timeout=10s", "-n", "benchmark-system", "exec", "deployment/modelgauge-controller", "--", "/usr/local/bin/modelgauge", "_guest", "idle"}, env)
 	if err != nil {
-		return fmt.Errorf("cannot verify job queues: %w", err)
-	}
-	fields := strings.Fields(string(counts))
-	if len(fields) != 2 {
-		return fmt.Errorf("invalid job state response")
-	}
-	for _, value := range fields {
-		count, err := strconv.ParseInt(value, 10, 64)
-		if err != nil || count < 0 {
-			return fmt.Errorf("invalid job state response")
-		}
-		if count > 0 {
-			if includeQueued {
-				return fmt.Errorf("active or queued jobs exist; finish or cancel them before cleanup or an upgrade without paused executors")
-			}
-			return fmt.Errorf("leased or running jobs exist; finish or cancel them before upgrading (queued jobs are preserved)")
-		}
+		return fmt.Errorf("controller operation is active or activity could not be verified: %w", err)
 	}
 	return nil
-}
-func (r Runtime) lock(relative string, create bool) (func(), error) {
-	path, err := r.safePath(relative)
-	if err != nil {
-		return nil, err
-	}
-	if !exists(path) && !create {
-		return func() {}, nil
-	}
-	flags := os.O_RDONLY
-	if create {
-		if err = os.MkdirAll(filepath.Dir(path), 0700); err != nil {
-			return nil, err
-		}
-		flags = os.O_RDWR | os.O_CREATE
-	}
-	file, err := os.OpenFile(path, flags, 0600)
-	if err != nil {
-		return nil, err
-	}
-	if err = syscall.Flock(int(file.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		file.Close()
-		return nil, fmt.Errorf("another agent, download or benchmark owns %s", relative)
-	}
-	return func() { _ = syscall.Flock(int(file.Fd()), syscall.LOCK_UN); _ = file.Close() }, nil
 }
 func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 	if !ownerPattern.MatchString(request.ID) || !ownerPattern.MatchString(r.MachineID) || (request.Role != "control" && request.Role != "benchmark") {
@@ -447,12 +398,6 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 		if err = r.verify(state, request.ID, false); err != nil {
 			return nil, err
 		}
-		create := request.Operation == "prepare" || request.Operation == "seal"
-		release, e := r.lock(".local/share/modelgauge/locks/ownership.lock", create)
-		if e != nil {
-			return nil, e
-		}
-		defer release()
 		state, err = r.load(request)
 		if err != nil {
 			return nil, err
@@ -468,25 +413,13 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 				return nil, err
 			}
 			if request.CheckIdle && request.Role == "control" {
-				if err = r.checkJobs(ctx, !request.AllowQueued); err != nil {
+				if err = r.checkJobs(ctx); err != nil {
 					return nil, err
 				}
 			} else if request.CheckIdle {
 				if err = r.active(ctx); err != nil {
 					return nil, err
 				}
-				pending, e := r.safePath(".local/share/modelgauge/results/.pending.json")
-				if e != nil {
-					return nil, e
-				}
-				if exists(pending) {
-					return nil, fmt.Errorf("pending agent work blocks upgrade")
-				}
-				release, e := r.lock(".local/share/modelgauge/locks/execution.lock", false)
-				if e != nil {
-					return nil, e
-				}
-				release()
 			}
 		} else {
 			for _, relative := range roots {
@@ -589,23 +522,11 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 		if err = r.verify(state, request.ID, true); err != nil {
 			return nil, err
 		}
-		pending, err := r.safePath(".local/share/modelgauge/results/.pending.json")
-		if err != nil {
-			return nil, err
-		}
-		if exists(pending) {
-			return nil, fmt.Errorf("pending experiment/download/upload exists")
-		}
 		if request.Role == "control" {
-			if err = r.checkJobs(ctx, true); err != nil {
+			if err = r.checkJobs(ctx); err != nil {
 				return nil, err
 			}
 		}
-		release, err := r.lock(".local/share/modelgauge/locks/execution.lock", false)
-		if err != nil {
-			return nil, err
-		}
-		defer release()
 		if request.Operation != "inspect" {
 			names := []string{}
 			for name := range state.Files {
@@ -619,14 +540,6 @@ func (r Runtime) Execute(ctx context.Context, request Request) (*State, error) {
 						return nil, err
 					}
 				}
-			}
-			agentRelease, err := r.lock(".local/share/modelgauge/locks/agent.lock", true)
-			if err != nil {
-				return nil, err
-			}
-			defer agentRelease()
-			if exists(pending) {
-				return nil, fmt.Errorf("work appeared during cleanup")
 			}
 		}
 		if request.Operation == "clean" {
@@ -759,11 +672,6 @@ func (r Runtime) WriteManaged(ctx context.Context, relative string, mode os.File
 	if err = r.verify(state, state.ID, false); err != nil {
 		return err
 	}
-	release, err := r.lock(".local/share/modelgauge/locks/ownership.lock", true)
-	if err != nil {
-		return err
-	}
-	defer release()
 	state, err = r.ownedState()
 	if err != nil {
 		return err
@@ -879,11 +787,6 @@ func (r Runtime) RemoveManaged(ctx context.Context, relative string) error {
 	if err = r.verify(state, state.ID, false); err != nil {
 		return err
 	}
-	release, err := r.lock(".local/share/modelgauge/locks/ownership.lock", true)
-	if err != nil {
-		return err
-	}
-	defer release()
 	state, err = r.ownedState()
 	if err != nil {
 		return err

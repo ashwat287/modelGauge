@@ -135,33 +135,3 @@ func TestServingModuleRejectsUnknownReportFields(t *testing.T) {
 		t.Fatal("moving validation out of the server weakened report validation")
 	}
 }
-
-func TestEngineResumeAcceptsRuntimeDiscoveredByOlderAgent(t *testing.T) {
-	current := protocol.ExamplePlan()
-	previous := current
-	previous.Runtime.Binary = "/managed/llama-bench"
-	if !sameEngineResumePlan(previous, current, "/managed/llama-bench") {
-		t.Fatal("moving discovery broke existing interrupted jobs")
-	}
-	if sameEngineResumePlan(previous, current, "/other/llama-bench") {
-		t.Fatal("different runtime path accepted")
-	}
-	previous.Defaults.MeasureRepetitions++
-	if sameEngineResumePlan(previous, current, "/managed/llama-bench") {
-		t.Fatal("changed workload accepted")
-	}
-}
-
-func TestServingMetricsAreOwnedByModuleAndOmitUnknownValues(t *testing.T) {
-	var out strings.Builder
-	writeServingMetrics(&out, "node", "lima-linux", "model", servingReport{Cases: []servingCaseResult{{ID: "load", Concurrency: 1, Scenario: "load", Successful: 1, RequestsPerSecond: 2, TTFTMS: &distributionStats{Count: 1, Mean: 1000, P95: 1000}}}})
-	text := out.String()
-	if !strings.Contains(text, `measurement="ttft"`) || strings.Contains(text, "modelgauge_serving_output_tokens_per_second{") || strings.Contains(text, "modelgauge_serving_sampled_peak_rss_bytes{") {
-		t.Fatal(text)
-	}
-	out.Reset()
-	writeServingMetrics(&out, "node", "lima-linux", "model", servingReport{StartupMS: floatPointer(250), ShutdownMS: floatPointer(100)})
-	if !strings.Contains(out.String(), "modelgauge_serving_process_start_to_ready_seconds{") || !strings.Contains(out.String(), "} 0.25\n") || !strings.Contains(out.String(), "modelgauge_serving_process_shutdown_seconds{") {
-		t.Fatal(out.String())
-	}
-}

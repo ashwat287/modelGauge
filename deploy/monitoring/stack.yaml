@@ -45,11 +45,6 @@ data:
             for: 2m
             labels: {severity: warning}
             annotations: {summary: 'Metrics target {{ $labels.instance }} is unavailable'}
-          - alert: AgentHeartbeatStale
-            expr: time() - modelgauge_agent_last_seen_seconds > 180
-            for: 5m
-            labels: {severity: warning}
-            annotations: {summary: 'No recent heartbeat from {{ $labels.node }}; check the agent and network'}
           - alert: LowAvailableMemory
             expr: node_memory_MemAvailable_bytes / node_memory_MemTotal_bytes < 0.10
             for: 5m

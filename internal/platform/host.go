@@ -70,8 +70,7 @@ func totalMemoryBytes() (uint64, error) {
 	}
 }
 
-// CommandContext owns a separate process group. Never release a workload lock
-// with its wrapper killed but descendants still executing.
+// CommandContext owns a separate process group. Cancellation stops descendants as well as the wrapper.
 func CommandContext(ctx context.Context, name string, args ...string) *exec.Cmd {
 	cmd := exec.CommandContext(ctx, name, args...)
 	cmd.SysProcAttr = &syscall.SysProcAttr{Setpgid: true}

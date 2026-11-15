@@ -3,45 +3,27 @@ package control
 import (
 	"bytes"
 	"context"
-	"debug/elf"
-	"errors"
 	"fmt"
 	"io"
-	"os"
-	"path/filepath"
 	"regexp"
 	"runtime"
-	"strings"
-	"time"
-
-	"github.com/nerdylucifer/modelgauge/internal/agent"
-	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
-	"github.com/nerdylucifer/modelgauge/internal/platform"
-	"github.com/nerdylucifer/modelgauge/internal/releases"
-	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 )
 
 // This is the upstream revision used by the existing validated Linux fixture.
 const LlamaRevision = "eb4e244be77a906a183cd4a00fd51d9ad3200955"
 
 type NodeOptions struct {
-	queuedJobsPaused                    bool
-	Name, Source, AgentBinary, Revision string
-	CPUs, MemoryGiB, DiskGiB            int
-	Log                                 io.Writer
+	Name, Revision           string
+	CPUs, MemoryGiB, DiskGiB int
+	Log                      io.Writer
 }
 
 func BootstrapNode(ctx context.Context, c Config, o NodeOptions) (resultErr error) {
 	if o.Log == nil {
 		o.Log = io.Discard
 	}
-	if o.Source == "" && o.AgentBinary == "" && runtime.GOOS != "linux" && !buildinfo.Released() {
-		return fmt.Errorf("provide --source REPO or a prebuilt Linux --agent-binary")
-	}
-	if o.Source != "" {
-		if _, err := os.Stat(filepath.Join(o.Source, "go.mod")); err != nil {
-			return fmt.Errorf("agent source repository: %w", err)
-		}
+	if _, err := nodeBinary(runtime.GOARCH); err != nil {
+		return err
 	}
 	if o.Name == c.VM {
 		return fmt.Errorf("the benchmark VM must be separate from the control VM")
@@ -52,35 +34,10 @@ func BootstrapNode(ctx context.Context, c Config, o NodeOptions) (resultErr erro
 	if !regexp.MustCompile(`^[0-9a-f]{40}$`).MatchString(o.Revision) {
 		return fmt.Errorf("llama revision must be a full 40-character commit hash")
 	}
-	if c.AgentToken == "" {
-		return fmt.Errorf("saved connection has no agent credential; rerun control bootstrap")
-	}
-	unlock, err := platform.Lock("agent-" + o.Name)
-	if err != nil {
-		return fmt.Errorf("stop the external executor before upgrading: %w", err)
-	}
-	defer unlock()
-
-	home, err := os.UserHomeDir()
-	if err != nil {
-		return err
-	}
-	if _, err = os.Lstat(filepath.Join(home, ".local/share/modelgauge/executors", o.Name, ".pending.json")); err == nil {
-		return fmt.Errorf("external executor has pending work; finish recovery before upgrading")
-	} else if !os.IsNotExist(err) {
-		return err
-	}
-
+	var err error
 	if err = connectionAction(ctx, c, o.Name, "pause"); err != nil {
 		return fmt.Errorf("pause controller executor (update the control deployment first): %w", err)
 	}
-	defer func() {
-		if resultErr != nil {
-			restore, cancel := context.WithTimeout(context.Background(), 20*time.Second)
-			defer cancel()
-			resultErr = errors.Join(resultErr, connectionAction(restore, c, o.Name, "resume"))
-		}
-	}()
 
 	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "benchmark", o.CPUs, o.MemoryGiB, o.DiskGiB, 0, o.Log, o)
 	if err != nil {
@@ -103,34 +60,6 @@ if pgrep -x 'llama-bench|llama-server' >/dev/null; then echo 'A benchmark is act
 	if err = shell(ctx, o.Name, preflight, nil, o.Log); err != nil {
 		return err
 	}
-	// Preserve prior service state and never interrupt a pending job to upgrade.
-	previousAgent, err := capture(ctx, o.Name, `if systemctl --user is-active --quiet modelgauge-agent.service; then printf active; else printf inactive; fi`)
-	if err != nil {
-		return err
-	}
-	if err = shell(ctx, o.Name, `set -euo pipefail
-if [ -f "$HOME/.local/share/modelgauge/results/.pending.json" ]; then echo 'Pending agent work must finish or recover before upgrade' >&2; exit 1; fi
-state=$(systemctl --user show modelgauge-agent.service -p LoadState --value 2>/dev/null || true)
-case "$state" in
- loaded) systemctl --user stop modelgauge-agent.service ;;
- not-found) ;;
- *) echo 'Cannot verify prior agent state' >&2; exit 1 ;;
-esac
-`, nil, o.Log); err != nil {
-		return err
-	}
-	defer func() {
-		if resultErr == nil || previousAgent != "active" {
-			return
-		}
-		session, _ := ctx.Value(bootstrapKey{}).(*bootstrapSession)
-		if session != nil && session.newVM {
-			return
-		}
-		recovery, cancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer cancel()
-		resultErr = errors.Join(resultErr, rawShell(recovery, o.Name, `systemctl --user start modelgauge-agent.service`, nil, io.Discard))
-	}()
 	if err = shell(ctx, o.Name, `set -euo pipefail
 sudo env DEBIAN_FRONTEND=noninteractive apt-get update
 sudo env DEBIAN_FRONTEND=noninteractive apt-get install -y git cmake build-essential pkg-config time ca-certificates curl
@@ -186,16 +115,7 @@ mkdir -p "$HOME/.local/bin" "$HOME/.local/share/modelgauge/models"
 		return err
 	}
 
-	if err = agent.SyncNode(ctx, agent.Config{ControllerURL: c.ControllerURL, Token: c.AgentToken, TargetVM: o.Name, NodeID: o.Name, DisplayName: o.Name, NodeKind: "virtual", ExecutionMode: protocol.ExecutionModeLima}); err != nil {
-		return err
-	}
-	// The old node service is retired only after its replacement binary is installed.
-	if err = shell(ctx, o.Name, `set -euo pipefail
-state=$(systemctl --user show modelgauge-agent.service -p LoadState --value 2>/dev/null || true)
-if [ "$state" = loaded ]; then "$HOME/.local/bin/modelgauge" agent uninstall; fi
-rm -f "$HOME/.config/modelgauge/agent.env"
-sudo loginctl enable-linger "$(id -un)"
-`, nil, o.Log); err != nil {
+	if err = shell(ctx, o.Name, `sudo loginctl enable-linger "$(id -un)"`, nil, o.Log); err != nil {
 		return err
 	}
 	if err = manager.enrollControllerExecutor(ctx, c, o.Name); err != nil {
@@ -203,75 +123,4 @@ sudo loginctl enable-linger "$(id -un)"
 	}
 	fmt.Fprintf(o.Log, "Benchmark node %s is ready. Its executor runs inside the controller.\n", o.Name)
 	return nil
-}
-
-func nodeBinary(ctx context.Context, o NodeOptions, arch string) ([]byte, error) {
-	if o.AgentBinary != "" {
-		data, err := os.ReadFile(o.AgentBinary)
-		if err != nil {
-			return nil, err
-		}
-		binary, err := elf.NewFile(bytes.NewReader(data))
-		if err != nil {
-			return nil, fmt.Errorf("agent must be a Linux ELF executable: %w", err)
-		}
-		defer binary.Close()
-		expected := elf.EM_AARCH64
-		if arch == "amd64" {
-			expected = elf.EM_X86_64
-		}
-		if binary.Machine != expected {
-			return nil, fmt.Errorf("agent binary architecture does not match Linux %s", arch)
-		}
-		return data, nil
-	}
-	if o.Source == "" && buildinfo.Released() {
-		data, err := releases.DownloadAgent(ctx, arch)
-		if err != nil {
-			return nil, err
-		}
-		binary, err := elf.NewFile(bytes.NewReader(data))
-		if err != nil {
-			return nil, fmt.Errorf("downloaded agent is not a Linux executable: %w", err)
-		}
-		defer binary.Close()
-		expected := elf.EM_AARCH64
-		if arch == "amd64" {
-			expected = elf.EM_X86_64
-		}
-		if binary.Machine != expected {
-			return nil, fmt.Errorf("downloaded agent architecture mismatch")
-		}
-		return data, nil
-	}
-	if o.Source == "" && runtime.GOOS == "linux" && runtime.GOARCH == arch {
-		path, err := os.Executable()
-		if err != nil {
-			return nil, err
-		}
-		return os.ReadFile(path)
-	}
-	if o.Source == "" {
-		return nil, fmt.Errorf("provide --source REPO to compile the Linux agent, or --agent-binary FILE for a matching Linux binary")
-	}
-	directory, err := os.MkdirTemp("", "modelgauge-agent-build-")
-	if err != nil {
-		return nil, err
-	}
-	defer os.RemoveAll(directory)
-	path := filepath.Join(directory, "modelgauge")
-	cmd := platform.CommandContext(ctx, "go", "build", "-trimpath", "-o", path, "./cmd/modelgauge")
-	cmd.Dir = o.Source
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "GOOS=") && !strings.HasPrefix(value, "GOARCH=") && !strings.HasPrefix(value, "CGO_ENABLED=") {
-			cmd.Env = append(cmd.Env, value)
-		}
-	}
-	cmd.Env = append(cmd.Env, "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
-	cmd.Stdout = o.Log
-	cmd.Stderr = o.Log
-	if err = cmd.Run(); err != nil {
-		return nil, err
-	}
-	return os.ReadFile(path)
 }

@@ -15,11 +15,8 @@ kind: Benchmark
 metadata:
   name: test-run
 spec:
-  nodes: [node]
-  models: [model]
-  matrix:
-    threads: [1, 2]
-    contexts: [512]
+  threads: [1, 2]
+  contexts: [512]
   stages:
     - profile: standard-cpu
       options: {warmups: 1, repetitions: 2}
@@ -72,9 +69,9 @@ func TestDeclarationRejectsAmbiguityUnknownSettingsAndBadTypes(t *testing.T) {
 		"duplicate threads":  strings.Replace(documentExample, "threads: [1, 2]", "threads: [1, 1]", 1),
 		"invalid option":     strings.Replace(documentExample, "warmups: 1", "warmups: 0", 1),
 		"null config":        strings.Replace(documentExample, "config: {suite: basic, requests: 2, concurrency: [1], output_tokens: 16}", "config: null", 1),
-		"alias":              strings.Replace(documentExample, "models: [model]", "models: &models [model]\n  nodes: *models", 1),
+		"alias":              strings.Replace(documentExample, "threads: [1, 2]", "threads: &values [1, 2]\n  contexts: *values", 1),
 		"multiple documents": documentExample + "---\n{}",
-		"invalid model list": strings.Replace(documentExample, "models: [model]", "models: [model, model]", 1),
+		"invalid model list": strings.Replace(documentExample, "threads: [1, 2]", "models: [model, model]", 1),
 		"custom mapping tag": strings.Replace(documentExample, "metadata:", "metadata: !custom", 1),
 		"deep nesting":       "[" + strings.Repeat("[", 70) + "0" + strings.Repeat("]", 71),
 		"empty":              "",
@@ -146,7 +143,7 @@ func TestDeclarationExampleAndPromptFixtures(t *testing.T) {
 	if _, err = d.Plan(context.Background(), "node", protocol.ExecutionModeLima, protocol.Model{ID: "qwen", Path: "/node/qwen.gguf", SHA256: strings.Repeat("a", 64)}); err != nil {
 		t.Fatal(err)
 	}
-	d.Spec.Matrix.Contexts = []int{}
+	d.Spec.Contexts = []int{}
 	d.Spec.Stages = d.Spec.Stages[1:]
 	d.Spec.Stages[0].Config = json.RawMessage(`{"suite":"basic","prompts":[{"text":"Say hello"}]}`)
 	if _, err = d.Plan(context.Background(), "node", protocol.ExecutionModeLima, protocol.Model{ID: "qwen", Path: "/node/qwen.gguf", SHA256: strings.Repeat("a", 64)}); err != nil {

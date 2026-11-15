@@ -2,19 +2,10 @@ apiVersion: v1
 kind: Namespace
 metadata:
   name: benchmark-system
-  labels:
-    app.kubernetes.io/part-of: modelgauge
----
-apiVersion: v1
-kind: Namespace
-metadata:
-  name: benchmark-data
-  labels:
-    app.kubernetes.io/part-of: modelgauge
+  labels: {app.kubernetes.io/part-of: modelgauge}
 ---
 apiVersion: v1
 kind: Namespace
 metadata:
   name: monitoring
-  labels:
-    app.kubernetes.io/part-of: modelgauge
+  labels: {app.kubernetes.io/part-of: modelgauge}

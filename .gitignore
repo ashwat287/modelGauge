@@ -33,3 +33,6 @@ dist/
 
 # Default go build output
 /modelgauge
+
+# Generated Linux runtimes embedded by make build
+/internal/control/runtimes/

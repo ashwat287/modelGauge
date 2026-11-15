@@ -62,13 +62,9 @@ func TestLimaImageDownloadFailureRollback(t *testing.T) {
 				env = append(env, entry)
 			}
 			env = append(env, "HOME="+home, "LIMA_HOME="+filepath.Join(root, "lima"), "XDG_CACHE_HOME="+filepath.Join(root, "cache"), "HTTPS_PROXY="+proxy.URL, "HTTP_PROXY="+proxy.URL, "NO_PROXY=")
-			source, err := filepath.Abs("../..")
-			if err != nil {
-				t.Fatal(err)
-			}
 			ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
 			defer cancel()
-			cmd := exec.CommandContext(ctx, executable, "control", "bootstrap", "--provider", "lima", "--name", "mg-create-check", "--source", source, "--cpus", "2", "--memory", "3", "--disk", "16", "--port", "18089")
+			cmd := exec.CommandContext(ctx, executable, "control", "bootstrap", "--provider", "lima", "--name", "mg-create-check", "--cpus", "2", "--memory", "3", "--disk", "16", "--port", "18089")
 			output := &bootstrapProgress{ready: make(chan struct{}, 1)}
 			cmd.Env, cmd.Stdout, cmd.Stderr = env, io.Discard, output
 			cmd.WaitDelay = 5 * time.Second
@@ -135,13 +131,9 @@ func TestLimaFreshBootstrapInterruptRollback(t *testing.T) {
 		t.Fatal(err)
 	}
 	name := "mg-interrupt-check-" + id[:12]
-	source, err := filepath.Abs("../..")
-	if err != nil {
-		t.Fatal(err)
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Minute)
 	defer cancel()
-	cmd := exec.CommandContext(ctx, executable, "control", "bootstrap", "--provider", "lima", "--name", name, "--source", source, "--cpus", "2", "--memory", "3", "--disk", "16", "--port", "18089", "--timeout", "4m")
+	cmd := exec.CommandContext(ctx, executable, "control", "bootstrap", "--provider", "lima", "--name", name, "--cpus", "2", "--memory", "3", "--disk", "16", "--port", "18089", "--timeout", "4m")
 	cmd.Stdout = io.Discard
 	output := &bootstrapProgress{ready: make(chan struct{}, 1)}
 	cmd.Stderr = output

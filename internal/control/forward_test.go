@@ -38,7 +38,7 @@ func TestForwardReadinessRejectsUnrelatedHealthAndRedirects(t *testing.T) {
 		service, body string
 		want          bool
 	}{
-		{"modelgauge-controller", `{"status":"ok","database":"reachable"}`, true},
+		{"modelgauge-controller", `{"status":"ok","active":false}`, true},
 		{"modelgauge-controller", `{"status":"ok"}`, false},
 		{"modelgauge-controller", `hello`, false},
 		{"grafana", `{"database":"ok","version":"test"}`, true},

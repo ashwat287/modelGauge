@@ -4,12 +4,15 @@ import (
 	"archive/tar"
 	"bytes"
 	"context"
+	"debug/elf"
 	"encoding/json"
 	"io"
 	"os"
+	"os/exec"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/nerdylucifer/modelgauge/internal/guest"
 )
@@ -99,5 +102,66 @@ func TestRebootstrapUpdatesGoHelper(t *testing.T) {
 	}
 	if _, err = m.cleanup(context.Background(), CleanupOptions{}); err != nil {
 		t.Fatal(err)
+	}
+}
+
+func TestLinuxRuntimeSelection(t *testing.T) {
+	for arch, machine := range map[string]elf.Machine{"arm64": elf.EM_AARCH64, "amd64": elf.EM_X86_64} {
+		data, err := nodeBinary(arch)
+		if err != nil {
+			if !strings.Contains(err.Error(), "make build or make install") {
+				t.Fatal(err)
+			}
+			// Plain Go test builds intentionally omit payloads; make test checks both.
+			if _, err = Bootstrap(context.Background(), Options{}); err == nil || !strings.Contains(err.Error(), "not bundled") {
+				t.Fatal("unbundled CLI attempted provisioning", err)
+			}
+			continue
+		}
+		binary, err := elf.NewFile(bytes.NewReader(data))
+		if err != nil {
+			t.Fatal(arch, err)
+		}
+		if binary.Machine != machine || binary.Entry == 0 {
+			t.Fatal("wrong embedded Linux executable", arch, binary.FileHeader)
+		}
+		binary.Close()
+	}
+	if _, err := nodeBinary("unsupported"); err == nil {
+		t.Fatal("unsupported architecture accepted")
+	}
+}
+
+func TestInstalledCLISetupWithoutCheckoutOrGo(t *testing.T) {
+	built := os.Getenv("MODELGAUGE_TEST_INSTALLED_CLI")
+	if built == "" {
+		t.Skip("make test supplies the bundled host CLI")
+	}
+	root := t.TempDir()
+	directory := filepath.Join(root, "bin")
+	if err := os.Mkdir(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile(built)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executable := filepath.Join(directory, "modelgauge")
+	if err = os.WriteFile(executable, data, 0755); err != nil {
+		t.Fatal(err)
+	}
+	// Stop at VM creation: prove setup reached Lima without touching real VMs.
+	fakeLima := "#!/bin/sh\ncase \"$1\" in\nlist) exit 0 ;;\ncreate) printf '%s' 'creation reached without source or Go' >&2; exit 1 ;;\n*) exit 99 ;;\nesac\n"
+	if err = os.WriteFile(filepath.Join(directory, "limactl"), []byte(fakeLima), 0755); err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	command := exec.CommandContext(ctx, executable, "setup")
+	command.Dir = root
+	command.Env = append(os.Environ(), "HOME="+root, "LIMA_HOME="+filepath.Join(root, "lima"), "PATH="+directory)
+	output, err := command.CombinedOutput()
+	if err == nil || !strings.Contains(string(output), "creation reached without source or Go") || !strings.Contains(string(output), "rollback completed") {
+		t.Fatalf("standalone setup did not reach Lima and recover: %v\n%s", err, output)
 	}
 }

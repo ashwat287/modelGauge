@@ -4,124 +4,129 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"github.com/nerdylucifer/modelgauge/internal/control"
+	"github.com/nerdylucifer/modelgauge/pkg/protocol"
 	"net/http"
 	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/nerdylucifer/modelgauge/internal/benchmark"
-	"github.com/nerdylucifer/modelgauge/internal/controller"
+	"time"
 )
 
-const yamlPlan = `apiVersion: modelgauge.io/v1alpha1
-kind: Benchmark
-metadata: {name: retry-test}
-spec:
-  nodes: [benchmark-node]
-  models: [qwen:q4]
-  matrix: {threads: [1], contexts: [512]}
-  stages: [{profile: standard-cpu}]
-`
+const yamlPlan = "apiVersion: modelgauge.io/v1alpha1\nkind: Benchmark\nmetadata: {name: foreground}\nspec: {threads: [1], contexts: [32], stages: [{profile: standard-cpu}]}"
 
-func TestYAMLCommandsUseOneControllerContractAndSurviveLostResponse(t *testing.T) {
-	var saved *controller.Experiment
-	dropped := false
-	requests := []string{}
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.Header.Get("X-ModelGauge-Admin-Token") != "secret" {
-			t.Error("missing authentication")
+func TestForegroundCLIStreamsOnceAndReportsFailure(t *testing.T) {
+	for _, operation := range []string{"install", "run"} {
+		for _, fail := range []bool{false, true} {
+			t.Run(operation+map[bool]string{true: "/failure", false: "/completed"}[fail], func(t *testing.T) {
+				t.Setenv("HOME", t.TempDir())
+				label := "Benchmark"
+				if operation == "install" {
+					label = "Installation"
+				}
+				server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+					if r.Header.Get("X-ModelGauge-Admin-Token") != "secret" {
+						t.Error("missing auth")
+					}
+					if r.URL.Path == "/v1/nodes" {
+						json.NewEncoder(w).Encode([]map[string]string{{"node_id": "node"}})
+						return
+					}
+					encoder := json.NewEncoder(w)
+					encoder.Encode(protocol.Event{Log: label + ": running"})
+					encoder.Encode(protocol.Event{Log: label + ": running"})
+					if fail {
+						encoder.Encode(protocol.Event{Error: "fixture failed"})
+						return
+					}
+					encoder.Encode(protocol.Event{Log: label + ": completed"})
+					result := json.RawMessage(`{"model_id":"model","status":"completed"}`)
+					if operation == "run" {
+						result = json.RawMessage(`{"name":"run-test","plans":[{"status":"completed"}]}`)
+					}
+					encoder.Encode(protocol.Event{Result: result})
+				}))
+				defer server.Close()
+				t.Setenv("MODELGAUGE_CONTROLLER_URL", server.URL)
+				t.Setenv("MODELGAUGE_ADMIN_TOKEN", "secret")
+				if err := control.Save(control.Config{Model: "model", ControllerURL: server.URL, AdminToken: "secret"}); err != nil {
+					t.Fatal(err)
+				}
+				file := filepath.Join(t.TempDir(), "benchmark.yaml")
+				os.WriteFile(file, []byte(yamlPlan), 0600)
+				args := []string{"run", file, "--json"}
+				if operation == "install" {
+					args = []string{"model", "install", "model", "--url", "https://example.test/model", "--json"}
+				}
+				var out, progress bytes.Buffer
+				code := Run(args, &out, &progress)
+				if (code != 0) != fail {
+					t.Fatal(code, &progress)
+				}
+				if strings.Count(progress.String(), label+": running") != 1 {
+					t.Fatal("running repeated", &progress)
+				}
+				if !fail && (!json.Valid(out.Bytes()) || strings.Count(progress.String(), label+": completed") != 1) {
+					t.Fatal(&out, &progress)
+				}
+			})
 		}
-		requests = append(requests, r.Method+" "+r.URL.Path)
-		if r.URL.Path == "/v1/experiments" {
-			var doc benchmark.Document
-			if err := json.NewDecoder(r.Body).Decode(&doc); err != nil {
-				t.Error(err)
-			}
-			if err := doc.Validate(); err != nil {
-				t.Error(err)
-			}
-			if r.URL.Query().Get("dry_run") == "true" {
-				_ = json.NewEncoder(w).Encode(controller.Experiment{Name: doc.Metadata.Name, Digest: doc.Digest()})
-				return
-			}
-			if saved == nil {
-				saved = &controller.Experiment{Name: doc.Metadata.Name, Digest: doc.Digest(), Specification: doc, Plans: []controller.ExperimentPlan{{PlanID: "stable", Status: "queued"}}}
-			}
-			if saved.Digest != doc.Digest() {
-				http.Error(w, "changed content", 409)
-				return
-			}
-			if !dropped {
-				dropped = true
-				http.Error(w, "response lost after commit", 503)
-				return
-			}
-		} else {
-			if saved == nil || r.URL.Query().Get("spec_sha256") != saved.Digest {
-				http.Error(w, "changed file", 409)
-				return
-			}
-			if strings.HasSuffix(r.URL.Path, "/cancel") {
-				saved.Plans[0].Status = "cancelled"
-			}
-		}
-		_ = json.NewEncoder(w).Encode(saved)
-	}))
-	defer server.Close()
-	file := filepath.Join(t.TempDir(), "benchmark.yaml")
-	if err := os.WriteFile(file, []byte(yamlPlan), 0600); err != nil {
-		t.Fatal(err)
-	}
-	run := func(command string, extra ...string) (int, string, string) {
-		var out, stderr bytes.Buffer
-		args := append([]string{command, "-f", file, "--controller", server.URL, "--admin-token", "secret"}, extra...)
-		code := RunContext(context.Background(), args, &out, &stderr)
-		return code, out.String(), stderr.String()
-	}
-	for _, command := range []string{"validate", "apply"} {
-		extra := []string{}
-		if command == "apply" {
-			extra = append(extra, "--dry-run")
-		}
-		if code, _, err := run(command, extra...); code != 0 {
-			t.Fatal(command, code, err)
-		}
-	}
-	if saved != nil {
-		t.Fatal("dry run submitted work")
-	}
-	if code, _, err := run("apply"); code == 0 || !strings.Contains(err, "Retry the same file") {
-		t.Fatal(code, err)
-	}
-	// Retrying requires no CLI-local state or knowledge of directories on the node.
-	if code, out, err := run("apply"); code != 0 || !strings.Contains(out, "stable") {
-		t.Fatal(code, out, err)
-	}
-	if code, out, err := run("status"); code != 0 || !strings.Contains(out, "queued") {
-		t.Fatal(code, out, err)
-	}
-	if code, out, err := run("cancel"); code != 0 || !strings.Contains(out, "cancelled") {
-		t.Fatal(code, out, err)
-	}
-	if len(requests) != 6 {
-		t.Fatal(requests)
 	}
 }
-
-func TestYAMLValidationFailsBeforeNetworkAndRejectsWorkloadFlags(t *testing.T) {
+func TestInterruptWaitsForCancellationWithoutRetry(t *testing.T) {
+	t.Setenv("HOME", t.TempDir())
+	started := make(chan struct{}, 1)
+	stopped := make(chan struct{}, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/v1/cancel":
+			stopped <- struct{}{}
+			w.WriteHeader(204)
+		default:
+			json.NewEncoder(w).Encode(protocol.Event{Log: "Benchmark: running"})
+			w.(http.Flusher).Flush()
+			started <- struct{}{}
+			<-r.Context().Done()
+		}
+	}))
+	defer server.Close()
+	t.Setenv("MODELGAUGE_CONTROLLER_URL", server.URL)
+	t.Setenv("MODELGAUGE_ADMIN_TOKEN", "secret")
+	control.Save(control.Config{Model: "model"})
 	file := filepath.Join(t.TempDir(), "benchmark.yaml")
-	if err := os.WriteFile(file, []byte(yamlPlan+"unexpected: true\n"), 0600); err != nil {
-		t.Fatal(err)
+	os.WriteFile(file, []byte(yamlPlan), 0600)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	done := make(chan int, 1)
+	var out, progress bytes.Buffer
+	go func() { done <- RunContext(ctx, []string{"run", file}, &out, &progress) }()
+	select {
+	case <-started:
+	case <-time.After(3 * time.Second):
+		t.Fatal("operation did not start")
 	}
-	var out, stderr bytes.Buffer
-	if code := Run([]string{"apply", "-f", file, "--controller", "http://127.0.0.1:1", "--admin-token", "secret"}, &out, &stderr); code != 2 || strings.Contains(stderr.String(), "connect") {
-		t.Fatal(code, stderr.String())
+	cancel()
+	select {
+	case code := <-done:
+		if code != 130 {
+			t.Fatal(code, &progress)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("interrupt did not finish")
 	}
-	for _, args := range [][]string{{"apply", "-f", file, "--threads", "2"}, {"status", "-f", file, "--dry-run"}, {"apply", "-f", file, "extra"}} {
-		if code := Run(args, &out, &stderr); code != 2 {
-			t.Fatal(args, code, stderr.String())
+	select {
+	case <-stopped:
+	default:
+		t.Fatal("worker stop was not requested")
+	}
+}
+func TestRemovedBackgroundCommandsAreRejected(t *testing.T) {
+	for _, command := range []string{"status", "logs", "cancel", "agent"} {
+		var out, stderr bytes.Buffer
+		if code := Run([]string{command}, &out, &stderr); code != 2 {
+			t.Fatal(command, code)
 		}
 	}
 }

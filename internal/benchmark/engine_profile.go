@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"path/filepath"
-	"sort"
+	"slices"
 
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
@@ -19,7 +19,6 @@ type planOptions struct {
 	ModelPath     string
 	ModelID       string
 	ModelSHA256   string
-	Binary        string
 	Threads       []int
 	Contexts      []int
 	Warmups       int
@@ -72,20 +71,13 @@ func standardCPUPlan(ctx context.Context, options planOptions) (protocol.Plan, e
 		cases = append(cases, protocol.Case{ID: fmt.Sprintf("generation-128-t%d", threads), Threads: threads, GenerationTokens: 128})
 	}
 	maxContext := contexts[len(contexts)-1]
-	return protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: options.NodeID, ExecutionMode: options.ExecutionMode, Runtime: protocol.Runtime{Kind: "llama.cpp", Binary: options.Binary}, Model: protocol.Model{ID: options.ModelID, Path: options.ModelPath, SHA256: digest}, Defaults: protocol.Defaults{WarmupRepetitions: options.Warmups, MeasureRepetitions: options.Repetitions, GPULayers: 0}, Cases: cases, MemoryCase: protocol.MemoryCase{ID: fmt.Sprintf("memory-p%d-g128-t%d", maxContext, threads[len(threads)-1]), Threads: threads[len(threads)-1], PromptTokens: maxContext, GenerationTokens: 128}}, nil
+	return protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: options.NodeID, ExecutionMode: options.ExecutionMode, Runtime: protocol.Runtime{Kind: "llama.cpp"}, Model: protocol.Model{ID: options.ModelID, Path: options.ModelPath, SHA256: digest}, Defaults: protocol.Defaults{WarmupRepetitions: options.Warmups, MeasureRepetitions: options.Repetitions, GPULayers: 0}, Cases: cases, MemoryCase: protocol.MemoryCase{ID: fmt.Sprintf("memory-p%d-g128-t%d", maxContext, threads[len(threads)-1]), Threads: threads[len(threads)-1], PromptTokens: maxContext, GenerationTokens: 128}}, nil
 }
 
 func uniqueSorted(values []int) []int {
-	seen := map[int]bool{}
-	for _, value := range values {
-		seen[value] = true
-	}
-	result := make([]int, 0, len(seen))
-	for value := range seen {
-		result = append(result, value)
-	}
-	sort.Ints(result)
-	return result
+	result := append([]int{}, values...)
+	slices.Sort(result)
+	return slices.Compact(result)
 }
 func trimExtension(value string) string {
 	extension := filepath.Ext(value)
@@ -94,7 +86,7 @@ func trimExtension(value string) string {
 
 func engineProfile(ctx context.Context, options planOptions, config json.RawMessage) ([]protocol.Plan, error) {
 	if len(config) != 0 {
-		return nil, fmt.Errorf("standard-cpu uses matrix threads/contexts and stage options; omit config")
+		return nil, fmt.Errorf("standard-cpu uses threads/contexts and stage options; omit config")
 	}
 	plan, err := standardCPUPlan(ctx, options)
 	return []protocol.Plan{plan}, err

@@ -63,7 +63,7 @@ func servingProfile(ctx context.Context, options planOptions, config json.RawMes
 		return nil, errors.New("node-serving requires 1..16 concurrency settings, positive requests and sustain_seconds <= 86400")
 	}
 	if len(settings.Prompts) != 0 && len(options.Contexts) > 0 {
-		return nil, errors.New("use prompt fixtures or synthetic contexts, not both (set matrix.contexts: [] for fixtures)")
+		return nil, errors.New("use prompt fixtures or synthetic contexts, not both (set spec.contexts: [] for fixtures)")
 	}
 	threads := options.Threads
 	if len(threads) == 0 {
@@ -130,7 +130,7 @@ func servingProfile(ctx context.Context, options planOptions, config json.RawMes
 				s.Server.ContextTokens = max(s.Server.ContextTokens, c.PromptTokens+c.OutputTokens+256)
 			}
 		}
-		plan := protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: options.NodeID, ExecutionMode: options.ExecutionMode, Runtime: protocol.Runtime{Kind: "llama-server", Binary: options.Binary}, Model: protocol.Model{ID: options.ModelID, Path: options.ModelPath, SHA256: options.ModelSHA256}}
+		plan := protocol.Plan{SchemaVersion: protocol.BenchmarkPlanV1, NodeID: options.NodeID, ExecutionMode: options.ExecutionMode, Runtime: protocol.Runtime{Kind: "llama-server"}, Model: protocol.Model{ID: options.ModelID, Path: options.ModelPath, SHA256: options.ModelSHA256}}
 		if plan.ExecutionMode == "" {
 			plan.ExecutionMode = protocol.ExecutionModeNative
 		}

@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/client"
 	"github.com/nerdylucifer/modelgauge/internal/control"
 	"github.com/nerdylucifer/modelgauge/internal/exporter"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
@@ -19,6 +20,7 @@ func (q *exportQueries) Set(value string) error { *q = append(*q, value); return
 func runExport(ctx context.Context, args []string, out, stderr io.Writer) int {
 	f := flag.NewFlagSet("export", flag.ContinueOnError)
 	setFlagOutput(f, stderr)
+	experiment := f.String("experiment", "", "export a named experiment; defaults to the latest completed run")
 	runID := f.String("run", "", "export one run and its related plan/evidence instead of all node history")
 	node := f.String("node", "", "node ID to export")
 	destination := f.String("output", "", "new directory for the export bundle")
@@ -39,9 +41,33 @@ func runExport(ctx context.Context, args []string, out, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "export takes flags only; choose --include-raw or --raw-from")
 		return 2
 	}
-	if *node == "" || *destination == "" || *controllerURL == "" || *token == "" {
+	if *destination == "" || *controllerURL == "" || *token == "" {
 		fmt.Fprintln(stderr, "--node, --output and a controller/admin connection are required")
 		return 2
+	}
+	api := &client.Client{BaseURL: *controllerURL, AdminToken: *token}
+	if *node == "" {
+		target, err := workspaceNode(ctx, api)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		*node = target.ID
+		if *runID == "" {
+			r, err := selectedResult(ctx, api, *node, *experiment)
+			if err != nil {
+				fmt.Fprintln(stderr, err)
+				return 1
+			}
+			*runID = r.RunID
+		}
+	} else if *experiment != "" {
+		r, err := selectedResult(ctx, api, *node, *experiment)
+		if err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		*runID = r.RunID
 	}
 	options := exporter.Options{RunID: *runID, NodeID: *node, Output: *destination, ControllerURL: *controllerURL, AdminToken: *token, PrometheusURL: *prom, PrometheusToken: os.Getenv("MODELGAUGE_PROMETHEUS_TOKEN"), Step: *step, Queries: queries}
 	for _, entry := range []struct {

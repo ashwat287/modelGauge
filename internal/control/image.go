@@ -7,14 +7,11 @@ import (
 	"crypto/sha256"
 	"encoding/json"
 	"fmt"
-	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
-	"os"
-	"path/filepath"
 	"strings"
 )
 
-func buildImage(ctx context.Context, name, source string, log io.Writer) (string, error) {
+func buildImage(ctx context.Context, name string, log io.Writer) (string, error) {
 	arch, err := capture(ctx, name, "uname -m")
 	if err != nil {
 		return "", err
@@ -27,26 +24,7 @@ func buildImage(ctx context.Context, name, source string, log io.Writer) (string
 	default:
 		return "", fmt.Errorf("unsupported VM architecture %s", arch)
 	}
-	directory, err := os.MkdirTemp("", "modelgauge-bootstrap-")
-	if err != nil {
-		return "", err
-	}
-	defer os.RemoveAll(directory)
-	binaryPath := filepath.Join(directory, "modelgauge")
-	cmd := platform.CommandContext(ctx, "go", "build", "-trimpath", "-o", binaryPath, "./cmd/modelgauge")
-	cmd.Dir = source
-	for _, value := range os.Environ() {
-		if !strings.HasPrefix(value, "GOOS=") && !strings.HasPrefix(value, "GOARCH=") && !strings.HasPrefix(value, "CGO_ENABLED=") {
-			cmd.Env = append(cmd.Env, value)
-		}
-	}
-	cmd.Env = append(cmd.Env, "GOOS=linux", "GOARCH="+arch, "CGO_ENABLED=0")
-	cmd.Stdout = log
-	cmd.Stderr = log
-	if err = cmd.Run(); err != nil {
-		return "", fmt.Errorf("build Linux controller (Go is required with --source): %w", err)
-	}
-	binary, err := os.ReadFile(binaryPath)
+	binary, err := nodeBinary(arch)
 	if err != nil {
 		return "", err
 	}

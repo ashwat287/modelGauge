@@ -6,40 +6,9 @@ import (
 	"net/http/httptest"
 	"os"
 	"path/filepath"
-	"strings"
 	"sync/atomic"
 	"testing"
-
-	"github.com/nerdylucifer/modelgauge/internal/platform"
 )
-
-func TestCleanupPreservesNodeWhileExternalExecutorOwnsWork(t *testing.T) {
-	home := t.TempDir()
-	t.Setenv("HOME", home)
-	m, f := fixture(t)
-	prepareTestVM(t, m, f, "benchmark", "benchmark")
-	unlock, err := platform.Lock("agent-benchmark")
-	if err != nil {
-		t.Fatal(err)
-	}
-	if _, err = m.cleanup(context.Background(), CleanupOptions{DeleteVMs: true}); err == nil || !strings.Contains(err.Error(), "stop the executor") {
-		t.Fatal("active executor did not block cleanup", err)
-	}
-	unlock()
-	directory := filepath.Join(home, ".local/share/modelgauge/executors/benchmark")
-	if err = os.MkdirAll(directory, 0700); err != nil {
-		t.Fatal(err)
-	}
-	if err = os.WriteFile(filepath.Join(directory, ".pending.json"), []byte(`{}`), 0600); err != nil {
-		t.Fatal(err)
-	}
-	if _, err = m.cleanup(context.Background(), CleanupOptions{DeleteVMs: true}); err == nil || !strings.Contains(err.Error(), "pending work") {
-		t.Fatal("pending upload did not block cleanup", err)
-	}
-	if f.guests["benchmark"] == nil {
-		t.Fatal("node was deleted")
-	}
-}
 
 func TestCleanupMissingVMsDoesNotRequireDeadController(t *testing.T) {
 	home := t.TempDir()

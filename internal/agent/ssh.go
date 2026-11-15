@@ -90,7 +90,7 @@ func (c SSHConnection) session(ctx context.Context) (*ssh.Session, func(), error
 	return session, func() { stop(); session.Close(); client.Close() }, nil
 }
 
-func (c SSHConnection) work(ctx context.Context, request workerRequest, unit string) (response workerResponse, resultErr error) {
+func (c SSHConnection) work(ctx context.Context, request workerRequest, unit string, log io.Writer) (response workerResponse, resultErr error) {
 	session, finish, err := c.session(ctx)
 	if err != nil {
 		return response, fmt.Errorf("%w: SSH session %s: %v", errWorkerTransport, c.Address, err)
@@ -100,7 +100,8 @@ func (c SSHConnection) work(ctx context.Context, request workerRequest, unit str
 	if err != nil {
 		return response, err
 	}
-	var stdout, stderr limitedBuffer
+	stdout := workerStream{log: log}
+	var stderr limitedBuffer
 	session.Stdout = &stdout
 	session.Stderr = &stderr
 	if err = session.Start("work " + unit); err != nil {
@@ -113,7 +114,7 @@ func (c SSHConnection) work(ctx context.Context, request workerRequest, unit str
 		cleanupErr := c.stop(stopCtx, unit)
 		return response, errors.Join(fmt.Errorf("%w: worker connection: %v: %s", errWorkerTransport, err, stderr.String()), cleanupErr)
 	}
-	return decodeWorkerResponse(stdout.Bytes())
+	return decodeWorkerResponse(stdout.final)
 }
 func (c SSHConnection) stop(ctx context.Context, unit string) error {
 	session, finish, err := c.session(ctx)

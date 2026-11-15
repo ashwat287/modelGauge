@@ -97,3 +97,10 @@ func DecodeStoredReport(current, legacy string) (*BenchmarkReport, error) {
 	}
 	return nil, nil
 }
+
+// Event is a foreground operation's progress or final response.
+type Event struct {
+	Log    string          `json:"log,omitempty"`
+	Result json.RawMessage `json:"result,omitempty"`
+	Error  string          `json:"error,omitempty"`
+}

@@ -8,15 +8,14 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
-	"github.com/nerdylucifer/modelgauge/internal/buildinfo"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"io"
 	"net"
 	"os"
 	"path/filepath"
 	"regexp"
+	"slices"
 	"strings"
-	"syscall"
 	"time"
 )
 
@@ -58,10 +57,9 @@ type limaInstance struct {
 	} `json:"config"`
 }
 type ownershipManager struct {
-	allowQueued bool
-	directory   string
-	binary      func(context.Context, string) ([]byte, error)
-	run         func(context.Context, []string, []byte) ([]byte, error)
+	directory string
+	binary    func(context.Context, string) ([]byte, error)
+	run       func(context.Context, []string, []byte) ([]byte, error)
 }
 type ownershipContextKey struct{}
 
@@ -84,26 +82,18 @@ func runLima(ctx context.Context, args []string, input []byte) ([]byte, error) {
 	return out.Bytes(), nil
 }
 func (m *ownershipManager) path() string { return filepath.Join(m.directory, "ownership.json") }
-func (m *ownershipManager) lock() (func(), error) {
+func (m *ownershipManager) prepareDirectory() error {
 	if err := os.MkdirAll(m.directory, 0700); err != nil {
-		return nil, err
+		return err
 	}
-	if info, err := os.Lstat(m.directory); err != nil || !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("ownership directory is unsafe")
-	}
-	p := filepath.Join(m.directory, ".ownership.lock")
-	if info, err := os.Lstat(p); err == nil && info.Mode()&os.ModeSymlink != 0 {
-		return nil, fmt.Errorf("ownership lock is a symlink")
-	}
-	f, err := os.OpenFile(p, os.O_CREATE|os.O_RDWR, 0600)
+	info, err := os.Lstat(m.directory)
 	if err != nil {
-		return nil, err
+		return err
 	}
-	if err = syscall.Flock(int(f.Fd()), syscall.LOCK_EX|syscall.LOCK_NB); err != nil {
-		f.Close()
-		return nil, fmt.Errorf("bootstrap/cleanup already in progress: %w", err)
+	if !info.IsDir() || info.Mode()&os.ModeSymlink != 0 {
+		return fmt.Errorf("ownership directory is unsafe")
 	}
-	return func() { _ = syscall.Flock(int(f.Fd()), syscall.LOCK_UN); _ = f.Close() }, nil
+	return nil
 }
 func (m *ownershipManager) load() (ownershipRegistry, error) {
 	registry := ownershipRegistry{Schema: ownershipSchema}
@@ -227,7 +217,7 @@ func verifyVM(v ownedVM, instance limaInstance) error {
 	return nil
 }
 func (m *ownershipManager) guest(ctx context.Context, v ownedVM, operation string, files []string) ([]byte, error) {
-	payload, err := ownershipPayload(v, operation, files, m.allowQueued)
+	payload, err := ownershipPayload(v, operation, files)
 	if err != nil {
 		return nil, err
 	}
@@ -269,17 +259,11 @@ func provisionVM(ctx context.Context, name, role string, cpus, memory, disk, por
 	if err != nil {
 		return ctx, nil, err
 	}
-	if options.Source == "" && options.AgentBinary == "" && !buildinfo.Released() {
-		if _, e := os.Stat("go.mod"); e == nil {
-			options.Source = "."
-		}
-	}
-	m.binary = func(ctx context.Context, arch string) ([]byte, error) { return nodeBinary(ctx, options, arch) }
-	m.allowQueued = options.queuedJobsPaused
+	m.binary = func(_ context.Context, arch string) ([]byte, error) { return nodeBinary(arch) }
 	return m.provision(ctx, name, role, cpus, memory, disk, port, log)
 }
 func (m *ownershipManager) provision(ctx context.Context, name, role string, cpus, memory, disk, port int, log io.Writer) (managed context.Context, done func() error, resultErr error) {
-	unlock, err := m.lock()
+	err := m.prepareDirectory()
 	if err != nil {
 		return ctx, nil, err
 	}
@@ -298,12 +282,16 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 					resultErr = errors.Join(resultErr, fmt.Errorf("rollback completed: newly created VM %s removed", name))
 				}
 			}
-			unlock()
 		}
 	}()
 	registry, err := m.load()
 	if err != nil {
 		return ctx, nil, err
+	}
+	for _, v := range registry.VMs {
+		if v.Role == role && v.Name != name {
+			return ctx, nil, fmt.Errorf("workspace already owns %s VM %s; reuse it or clean up before creating another", role, v.Name)
+		}
 	}
 	instances, err := m.instances(ctx)
 	if err != nil {
@@ -480,7 +468,6 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 	ctx = context.WithValue(ctx, ownershipContextKey{}, m)
 	failed = false
 	finish := func() error {
-		defer unlock()
 		if session.aborted {
 			return nil
 		}
@@ -495,23 +482,19 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 // reserveForward records an exact unit file before Forward creates or rewrites it.
 func reserveForward(ctx context.Context, name string, port int) (func() error, error) {
 	m, ok := ctx.Value(ownershipContextKey{}).(*ownershipManager)
-	var unlock func()
 	var err error
 	if !ok {
 		m, err = newOwnershipManager()
 		if err != nil {
 			return nil, err
 		}
-		unlock, err = m.lock()
+		err = m.prepareDirectory()
 		if err != nil {
 			return nil, err
 		}
-	} else {
-		unlock = func() {}
 	}
 	registry, err := m.load()
 	if err != nil {
-		unlock()
 		return nil, err
 	}
 	for i, v := range registry.VMs {
@@ -520,55 +503,38 @@ func reserveForward(ctx context.Context, name string, port int) (func() error, e
 		}
 		instances, e := m.instances(ctx)
 		if e != nil {
-			unlock()
 			return nil, e
 		}
 		if e = verifyVM(v, instances[name]); e != nil {
-			unlock()
 			return nil, e
 		}
 		if v.Role != "control" {
-			unlock()
 			return nil, fmt.Errorf("forwards require an owned control installation")
 		}
 		if ok {
 			if _, e = m.guest(ctx, v, "seal", nil); e != nil {
-				unlock()
 				return nil, e
 			}
 		}
 		file := fmt.Sprintf(".config/systemd/user/modelgauge-forward-%d.service", port)
 		if _, e = m.guest(ctx, v, "prepare", []string{file}); e != nil {
-			unlock()
 			return nil, e
 		}
-		if !contains(v.Files, file) {
+		if !slices.Contains(v.Files, file) {
 			registry.VMs[i].Files = append(v.Files, file)
 			if e = m.save(registry); e != nil {
-				unlock()
 				return nil, e
 			}
 		}
 		return func() error {
-			defer unlock()
 			sealCtx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 			defer cancel()
 			_, e := m.guest(sealCtx, v, "seal", nil)
 			return e
 		}, nil
 	}
-	unlock()
 	return nil, fmt.Errorf("control VM is untracked; bootstrap a new owned installation first")
 }
-func contains(values []string, value string) bool {
-	for _, v := range values {
-		if v == value {
-			return true
-		}
-	}
-	return false
-}
-
 func ownershipID(ctx context.Context, name string) (string, error) {
 	m, ok := ctx.Value(ownershipContextKey{}).(*ownershipManager)
 	if !ok {

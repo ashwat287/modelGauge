@@ -41,7 +41,7 @@ func (m *ownershipManager) readHelper(v ownedVM) ([]byte, error) {
 }
 func (m *ownershipManager) prepareHelper(ctx context.Context, v *ownedVM) error {
 	if m.binary == nil {
-		return fmt.Errorf("provide source or a matching Linux --helper-binary for guest bootstrap")
+		return fmt.Errorf("bundled Linux runtime is unavailable")
 	}
 	raw, err := m.run(ctx, []string{"shell", "--workdir", "/", v.Name, "--", "uname", "-m"}, nil)
 	if err != nil {
@@ -171,7 +171,7 @@ func managedBinary(ctx context.Context, name, arch string) ([]byte, error) {
 	return nil, fmt.Errorf("guest helper is not registered")
 }
 
-func ownershipPayload(v ownedVM, operation string, files []string, allowQueued bool) ([]byte, error) {
+func ownershipPayload(v ownedVM, operation string, files []string) ([]byte, error) {
 	checkIdle := operation == "bootstrap-prepare"
 	if operation == "inspect-cleanup" {
 		operation = "inspect"
@@ -179,7 +179,7 @@ func ownershipPayload(v ownedVM, operation string, files []string, allowQueued b
 	if checkIdle {
 		operation = "prepare"
 	}
-	return json.Marshal(guest.Request{AllowQueued: allowQueued && checkIdle && v.Role == "control", CheckIdle: checkIdle, ID: v.ID, Role: v.Role, Operation: operation, Files: files, Cleaned: v.Cleaned, Prepared: v.Prepared, Unprepared: !v.Prepared, MachineID: v.MachineID})
+	return json.Marshal(guest.Request{CheckIdle: checkIdle, ID: v.ID, Role: v.Role, Operation: operation, Files: files, Cleaned: v.Cleaned, Prepared: v.Prepared, Unprepared: !v.Prepared, MachineID: v.MachineID})
 }
 
 // Failed preparation must not replace a working cache when the guest still uses

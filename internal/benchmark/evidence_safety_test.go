@@ -30,24 +30,22 @@ func TestEngineRejectsUnsafeAndCollidingEvidenceNames(t *testing.T) {
 func TestEngineOutputDirectoryNeverClobbersExistingEvidence(t *testing.T) {
 	root := t.TempDir()
 	dir := filepath.Join(root, "run")
-	if err := prepareOutputDir(dir, false); err != nil {
+	if err := prepareOutputDir(dir); err != nil {
 		t.Fatal(err)
 	}
 	marker := filepath.Join(dir, "plan.json")
 	if err := os.WriteFile(marker, []byte("keep"), 0600); err != nil {
 		t.Fatal(err)
 	}
-	if prepareOutputDir(dir, false) == nil {
+	if prepareOutputDir(dir) == nil {
 		t.Fatal("fresh execution reused a directory")
 	}
-	if err := prepareOutputDir(dir, true); err != nil {
-		t.Fatal(err)
-	}
+
 	link := filepath.Join(root, "link")
 	if err := os.Symlink(dir, link); err != nil {
 		t.Fatal(err)
 	}
-	if prepareOutputDir(link, true) == nil {
+	if prepareOutputDir(link) == nil {
 		t.Fatal("resume followed symlink")
 	}
 	data, _ := os.ReadFile(marker)

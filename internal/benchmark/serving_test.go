@@ -89,19 +89,15 @@ func TestServingRunPersistsTimingQualityAndPrivateEvidence(t *testing.T) {
 	if _, _, err = runServingPlan(context.Background(), servingPlanWithConfig(plan, config), Options{OutputDir: dir}); err == nil {
 		t.Fatal("existing output overwritten")
 	}
-	count := requests.Load()
-	resumed, _, err := runServingPlan(context.Background(), servingPlanWithConfig(plan, config), Options{RunID: result.RunID, OutputDir: dir, Resume: true})
-	if err != nil || len(servingResult(resumed).Cases) != 1 || requests.Load() != count+4 {
-		t.Fatal("serving cases must be remeasured after process recovery:", err)
-	}
 	var output bytes.Buffer
 	if err = writeServingCSV(&output, []protocol.Result{result}); err != nil {
 		t.Fatal(err)
 	}
 	rows, err := csv.NewReader(&output).ReadAll()
 	if err != nil || len(rows) != 2 || len(rows[0]) != len(rows[1]) {
-		t.Fatal("invalid serving CSV:", err)
+		t.Fatal("invalid serving CSV", err)
 	}
+
 }
 
 func TestServingMissingUsageIncompleteAndNativeTokenBoundaries(t *testing.T) {
@@ -239,51 +235,6 @@ func TestServingMetricsAndQualityChecks(t *testing.T) {
 	d := distribution([]float64{1, 2, 3, 4, 5})
 	if d.P50 != 3 || d.P95 != 5 || d.Count != 5 || d.Mean != 3 {
 		t.Fatal(d)
-	}
-}
-
-func TestServingAgentInterruptionResumesUnfinishedCase(t *testing.T) {
-	t.Setenv("HOME", t.TempDir())
-	var block atomic.Bool
-	block.Store(true)
-	entered := make(chan struct{}, 1)
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path == "/v1/models" {
-			fmt.Fprint(w, `{}`)
-			return
-		}
-		if block.Load() {
-			w.Header().Set("Content-Type", "text/event-stream")
-			w.(http.Flusher).Flush()
-			entered <- struct{}{}
-			<-r.Context().Done()
-			return
-		}
-		openAIStream(w)
-	}))
-	defer server.Close()
-	plan := servingFixture(server.URL)
-	config := servingConfig(plan)
-	config.Cases[0].Requests, config.Cases[0].Concurrency, config.Cases[0].WarmupRequests = 1, 1, 0
-	ctx, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	go func() { <-entered; cancel() }()
-	dir := filepath.Join(t.TempDir(), "agent-run")
-	options := Options{RunID: "run-agent", OutputDir: dir, Resume: true}
-	if _, _, err := runServingPlan(ctx, servingPlanWithConfig(plan, config), options); err == nil {
-		t.Fatal("interrupted execution succeeded")
-	}
-	if _, err := os.Stat(filepath.Join(dir, "result.json")); !os.IsNotExist(err) {
-		t.Fatal("agent shutdown left a final result that would prevent recovery", err)
-	}
-	evidence, err := filepath.Glob(filepath.Join(dir, "interrupted-result-*.json"))
-	if err != nil || len(evidence) != 1 {
-		t.Fatal("missing interrupted evidence", evidence, err)
-	}
-	block.Store(false)
-	result, _, err := runServingPlan(context.Background(), servingPlanWithConfig(plan, config), options)
-	if err != nil || result.Status != protocol.RunStatusCompleted || servingResult(result).Cases[0].Successful != 1 {
-		t.Fatal("unfinished case was not rerun", result, err)
 	}
 }
 
