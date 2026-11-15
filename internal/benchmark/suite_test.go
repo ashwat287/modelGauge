@@ -8,6 +8,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/nerdylucifer/modelgauge/internal/platform"
@@ -82,18 +83,32 @@ func TestSuiteRunsSequentiallyAndStopsOnFailure(t *testing.T) {
 			_ = setConfig(&p, "suite", suitePlan{Stages: []protocol.Plan{first, second, third}})
 			var log bytes.Buffer
 			var live []protocol.Measurement
-			o := Options{Observe: func(m protocol.Measurement) { live = append(live, m) }, Log: &log, RunID: "run-test", OutputDir: filepath.Join(t.TempDir(), "run")}
+			var liveMu sync.Mutex
+			o := Options{Observe: func(m protocol.Measurement) {
+				liveMu.Lock()
+				defer liveMu.Unlock()
+				live = append(live, m)
+			}, Log: &log, RunID: "run-test", OutputDir: filepath.Join(t.TempDir(), "run")}
 			r, _, err := Run(ctx, p, o)
 			if !strings.Contains(log.String(), "Stage 1/3") || !strings.Contains(log.String(), "Stage 2/3") {
 				t.Fatal("stage progress missing", log.String())
 			}
 			if mode == "success" {
+				stageEvents := 0
 				for _, m := range live {
+					// Node-wide observation spans the suite, independently of stages.
+					if m.Case == "(node)" {
+						if m.Stage != "" {
+							t.Fatal("node observation acquired stage identity", m)
+						}
+						continue
+					}
 					if m.Stage == "" {
 						t.Fatal("suite dropped stage identity", m)
 					}
+					stageEvents++
 				}
-				if len(live) == 0 {
+				if stageEvents == 0 {
 					t.Fatal("suite dropped live events")
 				}
 				if err != nil || strings.Join(calls, ",") != "first,second,third" || len(r.Cases) != 3 {
