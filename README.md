@@ -1,12 +1,14 @@
 # 📊 ModelGauge
 
-Benchmark GGUF models on a Linux node before deployment: measure **throughput, request latency, and resource use**, watch live Grafana dashboards, and export the evidence.
+Benchmark GGUF models in a Linux VM on your Mac or another Mac over SSH. Measure **throughput, request latency, and resource use**, watch live Grafana dashboards, and export results before deployment.
 
 One Go executable manages one control VM, one benchmark VM, and one selected model. Install multiple models and compare them sequentially using the same YAML workload. Commands run in the foreground; there is no application database, job queue, or automatic recovery. **Run one command at a time**—execution locks do not prevent overlapping commands.
 
 ## 🚀 Install
 
-**Build prerequisites:** Go 1.23.6+, Git, and Make. **Runtime prerequisites:** Lima (`limactl` on PATH with working virtualization) and internet access for VM images, dependencies, containers, and models. Docker Desktop is not required.
+**On the computer running the CLI:** Go 1.23.6+, Git, and Make to build; Lima (`limactl` on PATH with working virtualization) to run the control VM. Internet access is required for images, dependencies, and models. Docker Desktop is not required.
+
+**For a remote benchmark Mac:** macOS 13.5+, hardware virtualization, Remote Login enabled for your account, and network access from the controller. Keep it awake with its lid open. Defaults require at least 32 GiB free disk and enough RAM for a 3 GiB VM plus macOS. ModelGauge installs Lima and the worker remotely; no Homebrew, Go, or manual VM preparation is needed there.
 
 ```sh
 git clone https://github.com/ashwat287/modelGauge.git
@@ -17,68 +19,88 @@ make install
 export PATH="$HOME/.local/bin:$PATH"
 ```
 
-`make install` installs to `~/.local/bin`; override with `BINDIR=/your/bin`. Keep the PATH export in your shell profile. The installed binary bundles Linux ARM64/AMD64 runtimes and deployment assets, so it works after deleting the checkout, without host Go, Git, or Make.
+`make install` installs to `~/.local/bin`; override with `BINDIR=/your/bin`. Keep the PATH export in your shell profile. The installed binary bundles Linux workers, macOS management helpers, and deployment assets for Intel/AMD64 and ARM64. It works after deleting the checkout; copy any example YAML you want to keep first. Go, Git, and Make are only needed again when rebuilding.
 
 ## 🏗️ Set up
 
+From the checkout, copy the [small validation plan](examples/remote-smoke.yaml) into a working directory:
+
 ```sh
 mkdir -p "$HOME/modelgauge-lab"
+cp examples/remote-smoke.yaml "$HOME/modelgauge-lab/benchmark.yaml"
 cd "$HOME/modelgauge-lab"
+```
+
+Choose **one** mode for the workspace. Setup provisions infrastructure; it is separate from installing the CLI and needs no source checkout.
+
+### Local: both VMs on this Mac
+
+```sh
 modelgauge setup
 ```
 
-Setup provisions services and builds pinned CPU-only llama.cpp binaries in the benchmark VM. It is separate from installing the CLI and needs no source checkout.
-
-| Default VM | CPUs | RAM | Disk |
-|---|---:|---:|---:|
-| `modelgauge-control` | 4 | 6 GiB | 50 GiB |
-| `benchmark-node` | 2 | 3 GiB | 30 GiB |
-
-Allow host memory **beyond the 9 GiB allocated to VMs**; these defaults are unsuitable for an 8 GiB laptop. To change allocations for newly created VMs:
-
-```sh
-modelgauge setup --control-memory 4 --node-memory 4 --node-cpus 2
-```
-
-Flags do not resize existing VMs. Private configuration and ownership records live in `~/.config/modelgauge/`. For upgrades, reinstall from source and rerun setup while idle. Legacy PostgreSQL workspaces require export and cleanup with the previous version; history is not migrated.
-
-### Benchmark on another Mac over SSH
-
-On the target Mac, enable **Remote Login**, allow your account, and keep the Mac awake and reachable. The supported remote setup requires macOS 13.5+, hardware virtualization, internet access, and enough free disk for the VM. You do not need to install Lima, Homebrew, Go, or ModelGauge there.
+### Remote: benchmark VM on another Mac
 
 ```sh
 modelgauge setup --remote-host your-user@192.168.1.50
 ```
 
-Verify the printed SSH host-key fingerprint and enter the SSH password at the hidden prompt. For key authentication, add `--identity /path/to/private-key` (an unencrypted bootstrap key); `--host-key SHA256:...` supplies an already verified fingerprint without the trust prompt. Credentials are used once and are not saved; dedicated scoped keys are kept privately by the controller.
+Verify the printed host-key fingerprint, type `yes`, and enter the SSH password at the hidden prompt. The target Mac's public fingerprint can be checked there with `ssh-keygen -lf /etc/ssh/ssh_host_ed25519_key.pub`.
 
-The control VM installs pinned Lima in a private directory on the remote Mac, creates a pinned Ubuntu 24.04 **2-vCPU / 3-GiB / 30-GiB VM**, and prepares its worker and llama.cpp. No personal Lima VMs or host-directory mounts are used. Both host and guest SSH keys are pinned. The controller connects through the Mac, so the guest SSH port stays on loopback; the Mac's SSH server must allow TCP forwarding. Subsequent `modelgauge setup` reuses the remote target. Clean up the existing workspace before switching between local and remote nodes.
+For key authentication or a custom SSH port:
 
-Start with the pinned **SmolLM2-135M Instruct Q4_K_M** model (~105 MB) and copy [examples/remote-smoke.yaml](examples/remote-smoke.yaml) into your working directory as `benchmark.yaml`:
+```sh
+modelgauge setup --remote-host your-user@192.168.1.50:2222 \
+  --identity /path/to/private-key \
+  --host-key SHA256:YOUR_VERIFIED_FINGERPRINT
+```
+
+`--identity` accepts an unencrypted bootstrap private key; omit it to use the password prompt. `--host-key` skips the trust prompt only when the fingerprint matches. Supplied passwords and bootstrap private keys are not saved; the controller stores dedicated scoped keys for subsequent operations.
+
+The **control VM** installs private, checksum-verified Lima, creates a pinned Ubuntu 24.04 VM, and prepares CPU-only llama.cpp and the Linux worker. Execution goes through the Mac into the guest over SSH. The guest SSH port stays on loopback; the Mac's SSH server must allow TCP forwarding. Personal Lima instances and host directories are not shared with the benchmark VM.
+
+| VM | CPUs | RAM | Disk | Location |
+|---|---:|---:|---:|---|
+| `modelgauge-control` | 4 | 6 GiB | 50 GiB | Computer running the CLI |
+| `benchmark-node` | 2 | 3 GiB | 30 GiB | Same computer, or remote Mac |
+
+Local defaults allocate **9 GiB on one computer**, which is unsuitable for an 8 GiB laptop. Remote mode splits the allocations between machines. Leave host OS headroom on both. Override resources for new VMs, for example:
+
+```sh
+modelgauge setup --remote-host your-user@192.168.1.50 \
+  --control-memory 4 --node-memory 3 --node-cpus 2 --node-disk 30
+```
+
+Resource flags do not resize existing VMs. Subsequent `modelgauge setup` reuses the configured mode and target. Export needed results and run `modelgauge cleanup --delete-vms` before switching modes. Private local configuration lives in `~/.config/modelgauge/`; remote ownership and execution credentials are retained by the controller.
+
+For source updates, rebuild with `make install` and rerun setup while idle. For a remote target, repeat the `setup --remote-host ...` command with login credentials to update its management helper too. Legacy PostgreSQL history is not migrated; export and clean up with the previous version first.
+
+## 🧪 Install a model and benchmark
+
+Start with the pinned **SmolLM2-135M Instruct Q4_K_M** model (~105 MB). With the example copied above:
 
 ```sh
 modelgauge model install smollm2-135m-instruct:q4_k_m
-modelgauge validate benchmark.yaml
+modelgauge validate benchmark.yaml &&
 modelgauge run benchmark.yaml
-modelgauge export --output ./exports/remote-smoke --include-raw
 ```
 
-The example tests both benchmark stages, threads 1/2, a 128-token prompt, and three short serving requests. Dashboards and the 60-second cooldown work as usual. Results describe the Linux VM, not native macOS. `cleanup --delete-vms` also removes the owned remote VM and private installation; unrelated files and VMs remain intact. An unreachable remote Mac blocks cleanup before the controller is removed.
+Installation downloads on the benchmark node, verifies the checksum, selects the model, and waits for completion. The small example tests threads 1/2, a 128-token prompt, three direct repetitions, and three serving requests with a 32-token output cap. It validates the workflow; use longer runs to assess stability and deployment capacity.
 
-## 🧪 Install a model and benchmark
+To try a larger catalog model:
 
 ```sh
 modelgauge model search qwen
 modelgauge model install qwen2.5-1.5b-instruct:q4_k_m
 ```
 
-Installation downloads on the node, verifies the checksum, and selects the model when complete. The catalog includes Qwen2.5 1.5B Instruct Q4_K_M, Q5_K_M, and Q8_0. For another compatible GGUF:
+The catalog also provides Qwen2.5 1.5B Instruct Q5_K_M and Q8_0. Each successful install selects that model. Both local and remote modes use the same commands and plans. For your own GGUF, supply its HTTPS URL and SHA-256:
 
 ```sh
 modelgauge model install my-model:q4 --url "$MODEL_URL" --sha256 "$MODEL_SHA256"
 ```
 
-Save `benchmark.yaml` outside the checkout:
+For a longer workload, replace `benchmark.yaml` with:
 
 ```yaml
 apiVersion: modelgauge.io/v1alpha1
@@ -133,7 +155,7 @@ To compare another installed model or capture JSON:
 
 ```sh
 modelgauge model list
-modelgauge model use qwen2.5-1.5b-instruct:q5_k_m
+modelgauge model use smollm2-135m-instruct:q4_k_m
 modelgauge run benchmark.yaml
 modelgauge run benchmark.yaml --json > experiment.json
 ```
@@ -211,23 +233,23 @@ Collection spans warmup, stage transitions, and cooldown. Process readings end a
 
 ### Grafana examples
 
-Real Qwen2.5 1.5B Instruct Q4_K_M measurements from a Lima VM; times are UTC. Your results will differ.
+Captured from the **Live experiment** dashboard for the validated **SmolLM2-135M Instruct Q4_K_M** run on the remote Mac's Linux VM. The selected window is **24 November 2026, 22:25:12–22:27:09 UTC**; screenshot axes show **25 November, 03:55–03:57 IST**. Flat segments retain measured results through cooldown; they are not new benchmark samples.
 
-**Throughput:** prompt processing and generation are separate workloads; steps represent newly completed results.
+**Direct throughput:** prompt processing and generation at one and two threads. Compare like workloads; prompt tokens/s and generation tokens/s describe different work.
 
-![Grafana prompt and generation throughput in tokens per second](docs/images/grafana-throughput.png)
+![Grafana direct throughput for SmolLM2 prompt and generation workloads at one and two threads](docs/images/grafana-throughput.png)
 
-**Request latency:** complete-answer timing. Overlapping percentiles in this small run do not establish a reliable production p99.
+**Memory baseline:** the separate memory workload's peak RSS and the 1.25× reservation estimate—about 144 MiB and 180 MiB here. The estimate is not a concurrent-serving guarantee.
 
-![Grafana request latency mean and percentiles](docs/images/grafana-request-latency.png)
+![Grafana measured peak resident memory and suggested memory reservation](docs/images/grafana-memory-baseline.png)
 
-**Process memory:** RSS/PSS by stage; readings end when each owned process exits. Missing samples remain gaps.
+**Serving response times:** p95 total latency and time to first token, plus TPOT in milliseconds per token. These answer different questions; three requests per case do not establish a reliable production p95.
 
-![Grafana process resident and proportional memory](docs/images/grafana-process-memory.png)
+![Grafana serving response times showing latency, time to first token, and time per output token](docs/images/grafana-request-latency.png)
 
-**Node CPU:** workload activity followed by cooldown. About 50% on two vCPUs corresponds to one fully occupied vCPU.
+**Serving throughput:** successful requests per second for the serving stages. Goodput is absent because this example has no configured service targets; an unavailable value is not zero.
 
-![Grafana benchmark-node CPU during workload and cooldown](docs/images/grafana-node-cpu.png)
+![Grafana serving throughput for the two serving stages](docs/images/grafana-serving-throughput.png)
 
 ### Inspect and export
 
@@ -241,27 +263,35 @@ modelgauge export --output ./exports/baseline --include-raw
 
 Results and exports default to the latest completed run; use `--experiment NAME` for history. The recommender selects measured direct settings with relative deviation at most 10% and checks the 1.25× RSS estimate against your budget. It does not grade quality or optimize serving concurrency.
 
-Exports include JSON/CSV measurements, plans/results, metrics, a manifest, and checksums. `--include-raw` retrieves node evidence. Optional Prometheus-history flags are listed in `modelgauge export --help`.
+Exports include JSON/CSV measurements, plans/results, metrics, a manifest, and checksums. `--include-raw` retrieves node evidence, including from remote VMs through the controller. Optional Prometheus-history flags are listed in `modelgauge export --help`.
 
 ## 🔌 Architecture
+
+Remote mode:
 
 ```mermaid
 flowchart LR
   CLI[Host CLI] -->|Foreground HTTP stream| C
   subgraph Control[Control Linux VM · k3s]
-    C[Controller + executor + live snapshot] --> F[Configuration + completed result files]
+    C[Controller + executor] --> F[Configuration + completed results]
     P[Prometheus] -->|Scrape| C
     G[Grafana] -->|Query| P
   end
-  C -->|Pinned SSH · plan, progress and measurements| W
-  subgraph Node[Benchmark Linux VM]
-    W[Temporary supervised worker] --> B[llama-bench]
-    W --> S[Temporary llama-server]
-    W --> E[Installed models + raw evidence]
+  C -->|Pinned SSH| H
+  subgraph Mac[Remote benchmark Mac]
+    H[SSH + scoped Lima management] -->|Create and manage| Node
+    H -->|Pinned guest SSH| W
+    subgraph Node[Ubuntu benchmark VM]
+      W[Temporary worker] --> B[llama-bench]
+      W --> S[Temporary llama-server]
+      W --> E[Models + raw evidence]
+    end
   end
 ```
 
-For remote targets, SSH goes through the target Mac into its owned Linux VM; the controller also manages that VM over the same host connection. The controller owns execution through one restricted, host-key-pinned SSH interface. The node needs neither k3s nor a resident agent. **llama-bench exits before llama-server starts**; they never run together. Owned process groups are stopped and reaped on interruption or supervised connection loss. A temporary observer handles cooldown, then exits.
+In local mode, both VMs run on the CLI computer and the controller connects directly to the benchmark VM. In either mode, the Linux node needs neither k3s nor a resident agent. **llama-bench exits before llama-server starts**; they never run together. Measurements and progress return over SSH, while serving requests stay inside the benchmark VM, excluding inter-laptop network latency.
+
+Owned processes are stopped and reaped on interruption or supervised connection loss. A temporary observer handles the 60-second cooldown, then exits; Grafana remains available.
 
 Benchmark modules own planning, execution, reports, and metrics; platform code transports common plan/result envelopes. Completed configuration/results persist, but interrupted operations are not restored.
 
@@ -277,12 +307,21 @@ modelgauge cleanup --delete-vms         # Also delete ModelGauge-created VMs
 modelgauge cleanup --force --delete-vms # Stop owned work and delete created VMs
 ```
 
+Remote resources are cleaned before the local controller. With `--delete-vms`, cleanup also removes the owned remote VM, private Lima installation, and management key; the Mac and unrelated files/VMs are preserved. Without VM deletion, the remote management installation is retained with the VM. An unreachable remote Mac blocks cleanup so the controller and ownership records remain available.
+
 Cleanup prints plain text; add `--json` for scripts. Active work causes an error suggesting `--force`. Force retains ownership/identity checks and does not stop unrelated processes or expand deletion scope; stopping managed work requires a reachable controller. Checks are best-effort, so avoid concurrent commands.
 
-For SSH failures, fix the VM/network issue, refresh registration, then rerun the command:
+| Problem | Action |
+|---|---|
+| `flag provided but not defined: -remote-host` | Run `make install` from the updated checkout; check `command -v modelgauge` and `modelgauge setup --help`. |
+| SSH connection timeout | Keep the target awake, confirm Remote Login and network access, and try its current IP instead of `.local`. A TCP timeout happens before password authentication. |
+| Host-key mismatch | Verify the target's identity before proceeding; do not bypass the check. |
+| No selected model | Run `modelgauge model install MODEL` or select an installed model with `modelgauge model use MODEL`. |
+
+After fixing a VM/network problem, verify or refresh its connection, then rerun the interrupted command:
 
 ```sh
 modelgauge node reconnect
 ```
 
-Reconnect does not restart a broken VM or resume work. See `modelgauge --help` and `<command> --help` for flags.
+Reconnect does not resume experiments. The remote connection can start its verified owned VM if stopped; a missing or broken VM needs setup or repair. See `modelgauge --help` and `<command> --help` for flags.
