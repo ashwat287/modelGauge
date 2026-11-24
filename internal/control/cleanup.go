@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/client"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -33,6 +35,23 @@ type CleanupReport struct {
 }
 
 func Cleanup(ctx context.Context, options CleanupOptions) (report CleanupReport, resultErr error) {
+	// Remote resources must be handled before the local controller disappears.
+	var remoteReport CleanupReport
+	if RemoteTargetTracked() {
+		c, err := Load()
+		if err != nil {
+			return report, fmt.Errorf("remote cleanup needs its controller; run setup to restore access: %w", err)
+		}
+		api := &client.Client{BaseURL: c.ControllerURL, AdminToken: c.AdminToken}
+		if err = api.StreamJSON(ctx, "/v1/remote/cleanup", options, &remoteReport, io.Discard); err != nil {
+			return report, fmt.Errorf("remote cleanup incomplete; controller preserved: %w", err)
+		}
+		if !options.DryRun && options.DeleteVMs {
+			if err = ForgetRemoteTarget(); err != nil {
+				return report, err
+			}
+		}
+	}
 	m, err := newOwnershipManager()
 	if err != nil {
 		return report, err
@@ -70,7 +89,10 @@ func Cleanup(ctx context.Context, options CleanupOptions) (report CleanupReport,
 			return report, e
 		}
 	}
-	return m.cleanup(ctx, options)
+	local, err := m.cleanup(ctx, options)
+	local.Targets = append(remoteReport.Targets, local.Targets...)
+	local.Untracked = append(remoteReport.Untracked, local.Untracked...)
+	return local, err
 }
 
 func (m *ownershipManager) cleanup(ctx context.Context, o CleanupOptions) (report CleanupReport, err error) {

@@ -74,21 +74,33 @@ func (e *ControllerExecutor) work(ctx context.Context, node string, request work
 	if err != nil {
 		return workerResponse{}, err
 	}
+	var response workerResponse
+	err = e.Manage(ctx, func(ctx context.Context) error {
+		config := Config{SSH: &c, Log: log}
+		if request.Operation == "benchmark" || request.Operation == "observe" {
+			config.Observe = e.live.Observe
+		}
+		var err error
+		response, err = remoteWork(ctx, config, request)
+		return err
+	})
+	return response, err
+}
+
+// Manage gives remote provisioning the same foreground cancellation lifetime.
+func (e *ControllerExecutor) Manage(ctx context.Context, work func(context.Context) error) error {
 	ctx, cancel := context.WithCancel(ctx)
 	defer cancel()
 	op := &operation{cancel: cancel, done: make(chan struct{})}
 	e.active.Store(op)
 	defer func() { close(op.done); e.active.CompareAndSwap(op, nil) }()
-	config := Config{SSH: &c, Log: log}
-	if request.Operation == "benchmark" || request.Operation == "observe" {
-		config.Observe = e.live.Observe
-	}
-	response, err := remoteWork(ctx, config, request)
+	err := work(ctx)
 	if ctx.Err() != nil {
-		err = errors.Join(err, ctx.Err())
+		return errors.Join(err, ctx.Err())
 	}
-	return response, err
+	return err
 }
+
 func (e *ControllerExecutor) Inspect(ctx context.Context, node string) (platform.Host, []controller.NodeModel, error) {
 	r, err := e.work(ctx, node, workerRequest{Operation: "inspect"}, nil)
 	return r.Host, r.Models, err

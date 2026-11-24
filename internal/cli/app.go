@@ -21,6 +21,13 @@ import (
 )
 
 func dispatch(ctx context.Context, args []string, stdout, stderr io.Writer) int {
+	if len(args) == 2 && args[0] == "_remote-host" {
+		if err := control.RunRemoteHost(ctx, args[1], os.Getenv("SSH_ORIGINAL_COMMAND"), os.Stdin, stdout, stderr); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 1
+		}
+		return 0
+	}
 	if len(args) > 0 && args[0] == "_guest" {
 		return runGuest(ctx, args[1:], stdout, stderr)
 	}
@@ -189,7 +196,7 @@ func printUsage(writer io.Writer) {
 
 Usage: modelgauge <command> [options]
 
-  setup                       Prepare one control VM and one benchmark VM
+  setup                       Prepare the controller and a local or remote benchmark VM
   model search QUERY          Find a catalog model
   model install MODEL         Download/select a model; stream progress until complete
   model use MODEL             Select an already installed model
@@ -240,7 +247,7 @@ func RunWithSignals(args []string, out, stderr io.Writer) int {
 	return RunContext(ctx, args, out, stderr)
 }
 func RunContext(ctx context.Context, args []string, out, stderr io.Writer) int {
-	if len(args) > 0 && args[0] == "_guest" {
+	if len(args) > 0 && (args[0] == "_guest" || args[0] == "_remote-host") {
 		return dispatch(ctx, args, out, stderr)
 	}
 	if handled, code := showRequestedHelp(args, out); handled {

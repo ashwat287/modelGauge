@@ -9,6 +9,7 @@ import (
 	"crypto/x509"
 	"encoding/json"
 	"encoding/pem"
+	"fmt"
 	"io"
 	"net"
 	"strings"
@@ -180,5 +181,152 @@ func TestSSHWorkerNegotiatesPinnedHostKey(t *testing.T) {
 	response, err := remoteWork(ctx, Config{SSH: &connection}, workerRequest{Operation: "inspect"})
 	if err != nil || response.Host.Hostname != "ssh-node" {
 		t.Fatal("server advertising ECDSA and pinned Ed25519 must connect", response, err)
+	}
+}
+
+// The jump peer exposes only one loopback VM port and a management connection
+// channel. Neither the host CLI nor an external forwarding process is involved.
+func testSSHJump(t *testing.T, node SSHConnection, metadata SSHConnection) (SSHConnection, <-chan struct{}) {
+	t.Helper()
+	host, _ := testSSHKey(t)
+	client, key := testSSHKey(t)
+	config := &ssh.ServerConfig{PublicKeyCallback: func(_ ssh.ConnMetadata, k ssh.PublicKey) (*ssh.Permissions, error) {
+		if string(k.Marshal()) != string(client.PublicKey().Marshal()) {
+			return nil, io.EOF
+		}
+		return nil, nil
+	}}
+	config.AddHostKey(host)
+	listener, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { listener.Close() })
+	released := make(chan struct{}, 10)
+	go func() {
+		for {
+			raw, err := listener.Accept()
+			if err != nil {
+				return
+			}
+			go func() {
+				c, channels, requests, err := ssh.NewServerConn(raw, config)
+				if err != nil {
+					raw.Close()
+					return
+				}
+				defer c.Close()
+				go ssh.DiscardRequests(requests)
+				for incoming := range channels {
+					switch incoming.ChannelType() {
+					case "direct-tcpip":
+						var target struct {
+							Host       string
+							Port       uint32
+							Origin     string
+							OriginPort uint32
+						}
+						if ssh.Unmarshal(incoming.ExtraData(), &target) != nil || net.JoinHostPort(target.Host, fmt.Sprint(target.Port)) != node.Address {
+							incoming.Reject(ssh.Prohibited, "not the owned VM")
+							continue
+						}
+						upstream, err := net.Dial("tcp", node.Address)
+						if err != nil {
+							incoming.Reject(ssh.ConnectionFailed, "VM unavailable")
+							continue
+						}
+						channel, requests, err := incoming.Accept()
+						if err != nil {
+							upstream.Close()
+							continue
+						}
+						go ssh.DiscardRequests(requests)
+						go func() {
+							defer upstream.Close()
+							defer channel.Close()
+							done := make(chan struct{})
+							go func() { io.Copy(upstream, channel); upstream.Close(); close(done) }()
+							io.Copy(channel, upstream)
+							channel.Close()
+							<-done
+						}()
+					case "session":
+						channel, requests, err := incoming.Accept()
+						if err != nil {
+							continue
+						}
+						go func() {
+							defer channel.Close()
+							for request := range requests {
+								var command struct{ Command string }
+								if request.Type != "exec" || ssh.Unmarshal(request.Payload, &command) != nil || command.Command != "connection" {
+									request.Reply(false, nil)
+									continue
+								}
+								request.Reply(true, nil)
+								json.NewEncoder(channel).Encode(metadata)
+								io.Copy(io.Discard, channel)
+								released <- struct{}{}
+								channel.SendRequest("exit-status", false, ssh.Marshal(struct{ Status uint32 }{0}))
+								return
+							}
+						}()
+					default:
+						incoming.Reject(ssh.UnknownChannelType, "unsupported")
+					}
+				}
+			}()
+		}
+	}()
+	return SSHConnection{Address: listener.Addr().String(), User: "mac-user", PrivateKey: key, HostKey: strings.TrimSpace(string(ssh.MarshalAuthorizedKey(host.PublicKey())))}, released
+}
+func TestSSHJumpUsesFreshVMPortAndClosesBothConnections(t *testing.T) {
+	node, commands := testSSHNode(t)
+	metadata := SSHConnection{Address: node.Address, User: node.User, HostKey: node.HostKey}
+	jump, released := testSSHJump(t, node, metadata)
+	node.Address = "127.0.0.1:1" // Stale saved port must never be used.
+	node.Jump = &jump
+	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	response, err := remoteWork(ctx, Config{SSH: &node}, workerRequest{Operation: "inspect"})
+	if err != nil || response.Host.Hostname != "ssh-node" {
+		t.Fatal(response, err)
+	}
+	if command := <-commands; !strings.HasPrefix(command, "work ") {
+		t.Fatal(command)
+	}
+	select {
+	case <-released:
+	case <-ctx.Done():
+		t.Fatal("jump connection session outlived worker")
+	}
+	wrong, _ := testSSHKey(t)
+	node.Jump.HostKey = string(ssh.MarshalAuthorizedKey(wrong.PublicKey()))
+	if _, err = remoteWork(ctx, Config{SSH: &node}, workerRequest{Operation: "inspect"}); err == nil {
+		t.Fatal("changed Mac host key accepted")
+	}
+}
+func TestSSHJumpRejectsChangedGuestIdentityAndNonLoopbackDestinations(t *testing.T) {
+	for _, mode := range []string{"key", "user", "destination"} {
+		t.Run(mode, func(t *testing.T) {
+			node, _ := testSSHNode(t)
+			metadata := SSHConnection{Address: node.Address, User: node.User, HostKey: node.HostKey}
+			switch mode {
+			case "key":
+				wrong, _ := testSSHKey(t)
+				metadata.HostKey = string(ssh.MarshalAuthorizedKey(wrong.PublicKey()))
+			case "user":
+				metadata.User = "another-user"
+			case "destination":
+				metadata.Address = "192.0.2.5:22"
+			}
+			jump, _ := testSSHJump(t, node, metadata)
+			node.Jump = &jump
+			ctx, cancel := context.WithTimeout(context.Background(), time.Second)
+			defer cancel()
+			if _, err := remoteWork(ctx, Config{SSH: &node}, workerRequest{Operation: "inspect"}); err == nil {
+				t.Fatal("unsafe jump metadata accepted")
+			}
+		})
 	}
 }

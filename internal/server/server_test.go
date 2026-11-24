@@ -240,3 +240,71 @@ func TestForegroundFlowFailureAndCancellation(t *testing.T) {
 		t.Fatal("cancellation did not require admin", status)
 	}
 }
+
+func TestRemoteManagementRoutesRequireAdminAndProtectExistingNode(t *testing.T) {
+	directory := t.TempDir()
+	store, err := controller.Open(context.Background(), directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := agent.NewControllerExecutor(context.Background(), directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer executor.Close()
+	api := New(store, Config{Executor: executor, AdminToken: "admin", DataDir: directory})
+	for _, path := range []string{"/v1/remote/probe", "/v1/remote/setup", "/v1/remote/cleanup", "/v1/remote/reconnect", "/v1/remote/evidence"} {
+		request := httptest.NewRequest("POST", path, strings.NewReader(`{}`))
+		response := httptest.NewRecorder()
+		api.Handler().ServeHTTP(response, request)
+		if response.Code != 401 {
+			t.Fatal(path, response.Code)
+		}
+	}
+	if err = store.SaveNode(controller.Node{ID: "existing-local-node"}); err != nil {
+		t.Fatal(err)
+	}
+	request := httptest.NewRequest("POST", "/v1/remote/setup", strings.NewReader(`{"cpus":2,"memory_gib":3,"disk_gib":30}`))
+	request.Header.Set("X-ModelGauge-Admin-Token", "admin")
+	response := httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, request)
+	if response.Code != 409 {
+		t.Fatal(response.Code, response.Body.String())
+	}
+	// An interrupted attempt's local intent marker must not cause a missing remote
+	// record to unregister an unrelated local node during cleanup.
+	request = httptest.NewRequest("POST", "/v1/remote/cleanup", strings.NewReader(`{"DeleteVMs":true}`))
+	request.Header.Set("X-ModelGauge-Admin-Token", "admin")
+	response = httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, request)
+	nodes, err := store.ListNodes(context.Background())
+	if err != nil || len(nodes) != 1 || nodes[0].ID != "existing-local-node" {
+		t.Fatal(nodes, err)
+	}
+}
+func TestCancellationStopsForegroundProvisioningBeforeNodeRegistration(t *testing.T) {
+	directory := t.TempDir()
+	store, err := controller.Open(context.Background(), directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	executor, err := agent.NewControllerExecutor(context.Background(), directory)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer executor.Close()
+	started := make(chan struct{})
+	done := make(chan error, 1)
+	go func() {
+		done <- executor.Manage(context.Background(), func(ctx context.Context) error { close(started); <-ctx.Done(); return ctx.Err() })
+	}()
+	<-started
+	api := New(store, Config{Executor: executor, AdminToken: "admin", DataDir: directory})
+	request := httptest.NewRequest("POST", "/v1/cancel", nil)
+	request.Header.Set("X-ModelGauge-Admin-Token", "admin")
+	response := httptest.NewRecorder()
+	api.Handler().ServeHTTP(response, request)
+	if response.Code != 200 || <-done == nil || executor.Active() {
+		t.Fatal(response.Code, response.Body.String())
+	}
+}

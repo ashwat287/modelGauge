@@ -15,7 +15,9 @@ const LlamaRevision = "eb4e244be77a906a183cd4a00fd51d9ad3200955"
 type NodeOptions struct {
 	Name, Revision           string
 	CPUs, MemoryGiB, DiskGiB int
-	Log                      io.Writer
+	Log                      io.Writer `json:"-"`
+	manager                  *ownershipManager
+	detached                 bool
 }
 
 func BootstrapNode(ctx context.Context, c Config, o NodeOptions) (resultErr error) {
@@ -35,8 +37,10 @@ func BootstrapNode(ctx context.Context, c Config, o NodeOptions) (resultErr erro
 		return fmt.Errorf("llama revision must be a full 40-character commit hash")
 	}
 	var err error
-	if err = connectionAction(ctx, c, o.Name, "pause"); err != nil {
-		return fmt.Errorf("pause controller executor (update the control deployment first): %w", err)
+	if !o.detached {
+		if err = connectionAction(ctx, c, o.Name, "pause"); err != nil {
+			return fmt.Errorf("pause controller executor (update the control deployment first): %w", err)
+		}
 	}
 
 	ctx, finishOwnership, err := provisionVM(ctx, o.Name, "benchmark", o.CPUs, o.MemoryGiB, o.DiskGiB, 0, o.Log, o)
@@ -48,8 +52,10 @@ func BootstrapNode(ctx context.Context, c Config, o NodeOptions) (resultErr erro
 	if manager == nil {
 		return fmt.Errorf("benchmark provisioning ownership context is missing")
 	}
-	if err = manager.checkNodeForward(ctx, c, o.Name); err != nil {
-		return err
+	if !o.detached {
+		if err = manager.checkNodeForward(ctx, c, o.Name); err != nil {
+			return err
+		}
 	}
 
 	preflight := `set -euo pipefail
@@ -118,8 +124,10 @@ mkdir -p "$HOME/.local/bin" "$HOME/.local/share/modelgauge/models"
 	if err = shell(ctx, o.Name, `sudo loginctl enable-linger "$(id -un)"`, nil, o.Log); err != nil {
 		return err
 	}
-	if err = manager.enrollControllerExecutor(ctx, c, o.Name); err != nil {
-		return err
+	if !o.detached {
+		if err = manager.enrollControllerExecutor(ctx, c, o.Name); err != nil {
+			return err
+		}
 	}
 	fmt.Fprintf(o.Log, "Benchmark node %s is ready. Its executor runs inside the controller.\n", o.Name)
 	return nil

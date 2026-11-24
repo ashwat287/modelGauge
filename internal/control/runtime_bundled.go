@@ -1,4 +1,4 @@
-//go:build bundled
+//go:build bundled || remotehost
 
 package control
 
@@ -18,3 +18,6 @@ func nodeBinary(arch string) ([]byte, error) {
 		return nil, fmt.Errorf("unsupported Linux runtime architecture %q", arch)
 	}
 }
+
+// macBinary is only used by the controller or the bundled host CLI.
+func macBinary(arch string) ([]byte, error) { return readMacRuntime(arch) }

@@ -23,7 +23,7 @@ func (r Runtime) RemoveControllerKey() error {
 	if err != nil {
 		return err
 	}
-	return r.replaceControllerKey(key, nil)
+	return r.ReplaceControllerKey(key, nil)
 }
 func (r Runtime) InstallControllerKey(ctx context.Context, public []byte) error {
 	key, _, _, _, err := ssh.ParseAuthorizedKey(public)
@@ -46,7 +46,7 @@ func (r Runtime) InstallControllerKey(ctx context.Context, public []byte) error 
 	if err = platform.WriteFile(recorded, append(append([]byte{}, previous...), line...), 0600); err != nil {
 		return err
 	}
-	if err = r.replaceControllerKey(previous, append(append([]byte{}, previous...), line...)); err != nil {
+	if err = r.ReplaceControllerKey(previous, append(append([]byte{}, previous...), line...)); err != nil {
 		return err
 	}
 	return nil
@@ -62,12 +62,12 @@ func (r Runtime) CommitControllerKey() error {
 		return errors.New("missing controller SSH key")
 	}
 	latest := append(append([]byte{}, lines[len(lines)-1]...), '\n')
-	if err = r.replaceControllerKey(previous, latest); err != nil {
+	if err = r.ReplaceControllerKey(previous, latest); err != nil {
 		return err
 	}
 	return platform.WriteFile(path, latest, 0600)
 }
-func (r Runtime) replaceControllerKey(previous, next []byte) error {
+func (r Runtime) ReplaceControllerKey(previous, next []byte) error {
 	directory := filepath.Join(r.Home, ".ssh")
 	path := filepath.Join(directory, "authorized_keys")
 	if info, err := os.Lstat(directory); err == nil {

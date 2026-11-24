@@ -4,6 +4,7 @@ import (
 	"context"
 	"flag"
 	"fmt"
+	"github.com/nerdylucifer/modelgauge/internal/client"
 	"io"
 	"net/url"
 	"os"
@@ -132,6 +133,10 @@ func runSetup(ctx context.Context, args []string, out, stderr io.Writer) int {
 	controlMemory := f.Int("control-memory", 6, "control VM RAM in GiB")
 	nodeMemory := f.Int("node-memory", 3, "benchmark VM RAM in GiB")
 	nodeCPUs := f.Int("node-cpus", 2, "benchmark VM CPUs")
+	nodeDisk := f.Int("node-disk", 30, "benchmark VM disk GiB")
+	remoteHost := f.String("remote-host", "", "Mac SSH destination USER@HOST[:PORT]; create its benchmark VM remotely")
+	identity := f.String("identity", "", "bootstrap SSH private key file; otherwise prompt for password")
+	hostKey := f.String("host-key", "", "verified remote Mac SHA256 host-key fingerprint; otherwise prompt")
 	if err := f.Parse(args); err != nil {
 		return flagExitCode(err)
 	}
@@ -139,11 +144,41 @@ func runSetup(ctx context.Context, args []string, out, stderr io.Writer) int {
 		fmt.Fprintln(stderr, "setup accepts flags only")
 		return 2
 	}
+	if *nodeCPUs < 1 || *nodeMemory < 2 || *nodeDisk < 10 || (*remoteHost != "" && *nodeCPUs > 4) {
+		fmt.Fprintln(stderr, "invalid benchmark VM resources")
+		return 2
+	}
+	if *remoteHost != "" {
+		if _, _, err := parseRemoteHost(*remoteHost); err != nil {
+			fmt.Fprintln(stderr, err)
+			return 2
+		}
+	}
+	if *remoteHost == "" && (*identity != "" || *hostKey != "") {
+		fmt.Fprintln(stderr, "--identity and --host-key require --remote-host")
+		return 2
+	}
 	controlArgs := []string{"bootstrap", "--memory", strconv.Itoa(*controlMemory)}
-	nodeArgs := []string{"--memory", strconv.Itoa(*nodeMemory), "--cpus", strconv.Itoa(*nodeCPUs)}
+	nodeArgs := []string{"--memory", strconv.Itoa(*nodeMemory), "--cpus", strconv.Itoa(*nodeCPUs), "--disk", strconv.Itoa(*nodeDisk)}
 	if code := runControl(ctx, controlArgs, out, stderr); code != 0 {
 		return code
 	}
 	loadControlEnvironment()
+	c, err := control.Load()
+	if err != nil {
+		fmt.Fprintln(stderr, err)
+		return 1
+	}
+	// Use the freshly bootstrapped controller, not an inherited stale environment.
+	if *remoteHost != "" || control.RemoteTargetTracked() {
+		return setupRemote(ctx, c, *remoteHost, *identity, *hostKey, *nodeCPUs, *nodeMemory, *nodeDisk, out, stderr)
+	}
+	api := &client.Client{BaseURL: c.ControllerURL, AdminToken: c.AdminToken}
+	var state struct {
+		Configured bool `json:"configured"`
+	}
+	if _, err = api.DoJSON(ctx, "GET", "/v1/remote", "admin", nil, &state); err == nil && state.Configured {
+		return setupRemote(ctx, c, "", "", "", *nodeCPUs, *nodeMemory, *nodeDisk, out, stderr)
+	}
 	return bootstrapNode(ctx, nodeArgs, out, stderr)
 }

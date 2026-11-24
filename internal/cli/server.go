@@ -35,7 +35,7 @@ func runServer(ctx context.Context, args []string, out, stderr io.Writer) int {
 		return 1
 	}
 	defer executor.Close()
-	api := server.New(store, server.Config{Executor: executor, AdminToken: token})
+	api := server.New(store, server.Config{Executor: executor, AdminToken: token, DataDir: *directory})
 	fmt.Fprintln(out, "ModelGauge controller listening on", *listen)
 	if err = server.ListenAndServe(ctx, *listen, api.Handler()); err != nil {
 		fmt.Fprintln(stderr, err)

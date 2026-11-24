@@ -72,7 +72,7 @@ var commandHelp = map[string]string{
 	"model install":           "📦 modelgauge model install MODEL [--url HTTPS_URL --sha256 HASH]\nDownloads and selects a model, streams progress, and waits for completion. Ctrl+C requests cancellation; no job ID is needed.",
 	"node":                    "🖥️ One benchmark node\n  modelgauge node reconnect\n  modelgauge node bootstrap\n  modelgauge node inspect\nThe workspace owns one benchmark node, separate from k3s.",
 	"node inspect":            "🖥️ modelgauge node inspect\nInspect this Linux machine as JSON.",
-	"control":                 "🏗️ One control plane\n  modelgauge setup\n  modelgauge control bootstrap\nExisting VM resources are reused, not resized.",
+	"control":                 "🏗️ One control plane\n  modelgauge setup\n  modelgauge setup --remote-host USER@HOST\n  modelgauge control bootstrap\nExisting VM resources are reused, not resized.",
 	"benchmark":               "🧪 modelgauge run benchmark.yaml\nOne selected model, one node, ordered benchmark stages. Progress is shown until completion; Ctrl+C stops the operation.\nAvailable profiles: modelgauge benchmark profiles list.",
 	"benchmark profiles list": "🧪 modelgauge benchmark profiles list\nList registered profiles as JSON.",
 	"results":                 "📈 modelgauge results [--experiment NAME] [--json]\nShow the latest completed run by default.\nmodelgauge results recommend --context 512 [--memory-budget-gib 2]\nRecommendations use the selected model and measured node.",

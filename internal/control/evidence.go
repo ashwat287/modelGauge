@@ -9,11 +9,21 @@ import (
 	"github.com/nerdylucifer/modelgauge/internal/guest"
 	"github.com/nerdylucifer/modelgauge/internal/platform"
 	"github.com/nerdylucifer/modelgauge/pkg/protocol"
+	"io"
+	"net/http"
+	"strings"
 )
 
 // CopyLimaEvidence reads only manifest-listed files. It holds the ownership lock
 // through transfer so cleanup cannot remove a node while evidence is copied.
 func CopyLimaEvidence(ctx context.Context, node string, refs []protocol.EvidenceRef, destination string) error {
+	if RemoteTargetTracked() {
+		c, err := Load()
+		if err != nil {
+			return err
+		}
+		return CopyRemoteEvidence(ctx, c, refs, destination)
+	}
 	if len(refs) > 10000 {
 		return fmt.Errorf("too many raw evidence files")
 	}
@@ -94,4 +104,43 @@ exec "$helper" _guest evidence
 		return fmt.Errorf("raw evidence transfer failed: %w: %s", waitErr, stderr.String())
 	}
 	return nil
+}
+
+// RemoteEvidence keeps raw transfer behind the same controller-owned SSH route.
+func RemoteEvidence(ctx context.Context, directory string, refs []protocol.EvidenceRef, out io.Writer) error {
+	if len(refs) > 10000 {
+		return fmt.Errorf("too many raw evidence files")
+	}
+	for _, ref := range refs {
+		if _, err := evidence.Relative(ref); err != nil {
+			return err
+		}
+	}
+	host, err := loadRemote(directory)
+	if err != nil {
+		return err
+	}
+	return host.Host.Command(ctx, "manage", remoteHostRequest{Operation: "evidence", Evidence: refs}, out, io.Discard)
+}
+func CopyRemoteEvidence(ctx context.Context, c Config, refs []protocol.EvidenceRef, destination string) error {
+	data, err := json.Marshal(refs)
+	if err != nil {
+		return err
+	}
+	request, err := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.ControllerURL, "/")+"/v1/remote/evidence", bytes.NewReader(data))
+	if err != nil {
+		return err
+	}
+	request.Header.Set("X-ModelGauge-Admin-Token", c.AdminToken)
+	request.Header.Set("Content-Type", "application/json")
+	client := &http.Client{CheckRedirect: func(*http.Request, []*http.Request) error { return http.ErrUseLastResponse }}
+	response, err := client.Do(request)
+	if err != nil {
+		return err
+	}
+	defer response.Body.Close()
+	if response.StatusCode != 200 {
+		return fmt.Errorf("remote evidence: %s", response.Status)
+	}
+	return evidence.ReceiveArchiveContext(ctx, response.Body, destination, refs)
 }

@@ -67,7 +67,7 @@ func (f *fakeLima) run(ctx context.Context, args []string, input []byte) ([]byte
 			}
 			if arg == "--set" {
 				prefix := ".env." + limaOwnerEnv + " = "
-				if strings.HasPrefix(args[i+1], ".ssh.localPort = ") {
+				if strings.HasPrefix(args[i+1], ".ssh.") || strings.HasPrefix(args[i+1], ".mounts = ") || strings.HasPrefix(args[i+1], ".portForwards = ") {
 					continue
 				}
 				if !strings.HasPrefix(args[i+1], prefix) || json.Unmarshal([]byte(strings.TrimPrefix(args[i+1], prefix)), &owner) != nil {

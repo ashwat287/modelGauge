@@ -8,6 +8,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"sort"
 	"strings"
 )
 
@@ -28,13 +29,34 @@ func buildImage(ctx context.Context, name string, log io.Writer) (string, error)
 	if err != nil {
 		return "", err
 	}
+	payloads := map[string][]byte{"usr/local/bin/modelgauge": binary}
+	for _, target := range []string{"amd64", "arm64"} {
+		worker, err := nodeBinary(target)
+		if err != nil {
+			return "", err
+		}
+		helper, err := macBinary(target)
+		if err != nil {
+			return "", err
+		}
+		payloads["opt/modelgauge/runtimes/linux-"+target] = worker
+		payloads["opt/modelgauge/runtimes/darwin-"+target] = helper
+	}
 	var layer bytes.Buffer
 	tw := tar.NewWriter(&layer)
-	if err = tw.WriteHeader(&tar.Header{Name: "usr/local/bin/modelgauge", Mode: 0755, Size: int64(len(binary))}); err != nil {
-		return "", err
+	names := make([]string, 0, len(payloads))
+	for name := range payloads {
+		names = append(names, name)
 	}
-	if _, err = tw.Write(binary); err != nil {
-		return "", err
+	sort.Strings(names)
+	for _, name := range names {
+		payload := payloads[name]
+		if err = tw.WriteHeader(&tar.Header{Name: name, Mode: 0755, Size: int64(len(payload))}); err != nil {
+			return "", err
+		}
+		if _, err = tw.Write(payload); err != nil {
+			return "", err
+		}
 	}
 	if err = tw.Close(); err != nil {
 		return "", err
@@ -47,7 +69,7 @@ func buildImage(ctx context.Context, name string, log io.Writer) (string, error)
 	manifest, _ := json.Marshal(map[string]any{"schemaVersion": 2, "mediaType": "application/vnd.oci.image.manifest.v1+json", "config": descriptor("application/vnd.oci.image.config.v1+json", config), "layers": []any{descriptor("application/vnd.oci.image.layer.v1.tar", layer.Bytes())}})
 	// Content-addressed tags make repeat applies idempotent and ensure upgrades
 	// schedule the intended image without relying on a mutable local tag.
-	image := fmt.Sprintf("docker.io/library/modelgauge:bootstrap-%x", sha256.Sum256(binary))
+	image := fmt.Sprintf("docker.io/library/modelgauge:bootstrap-%x", sha256.Sum256(layer.Bytes()))
 	md := descriptor("application/vnd.oci.image.manifest.v1+json", manifest)
 	md["annotations"] = map[string]string{"org.opencontainers.image.ref.name": image}
 	index, _ := json.Marshal(map[string]any{"schemaVersion": 2, "manifests": []any{md}})

@@ -40,6 +40,15 @@ func runNodeManagement(ctx context.Context, args []string, out, stderr io.Writer
 			return 2
 		}
 		c, err := control.Load()
+		if err == nil && control.RemoteTargetTracked() {
+			api := &client.Client{BaseURL: c.ControllerURL, AdminToken: c.AdminToken}
+			if _, err = api.DoJSON(ctx, "POST", "/v1/remote/reconnect", "admin", nil, nil); err != nil {
+				fmt.Fprintln(stderr, "node reconnect:", err)
+				return 1
+			}
+			fmt.Fprintln(out, "✅ Remote benchmark connection verified.")
+			return 0
+		}
 		if err == nil {
 			ctx, cancel := context.WithTimeout(ctx, 2*time.Minute)
 			defer cancel()

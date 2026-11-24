@@ -24,7 +24,21 @@ type CatalogEntry struct {
 	URL          string `json:"url"`
 }
 
+// The tiny validation model is pinned so setup tests remain reproducible.
+var tinyModel = CatalogEntry{
+	ID: "smollm2-135m-instruct:q4_k_m", Quantization: "q4_k_m",
+	Repository: "bartowski/SmolLM2-135M-Instruct-GGUF",
+	Revision:   "09816acd5d99df7be770d85ea30822623dab342c",
+	SizeBytes:  105454432,
+	SHA256:     "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
+	URL:        "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/09816acd5d99df7be770d85ea30822623dab342c/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+}
+
 func SearchContext(ctx context.Context, query string) ([]CatalogEntry, error) {
+	if strings.Contains(strings.ToLower(tinyModel.ID), strings.ToLower(query)) && strings.HasPrefix(strings.ToLower(query), "smol") {
+		return []CatalogEntry{tinyModel}, nil
+	}
+
 	client := &http.Client{Timeout: 30 * time.Second}
 	request, err := http.NewRequestWithContext(ctx, "GET", "https://huggingface.co/api/models/"+catalogRepository+"?blobs=true", nil)
 	if err != nil {
@@ -52,6 +66,9 @@ func SearchContext(ctx context.Context, query string) ([]CatalogEntry, error) {
 		return nil, err
 	}
 	entries := []CatalogEntry{}
+	if strings.Contains(strings.ToLower(tinyModel.ID), strings.ToLower(query)) {
+		entries = append(entries, tinyModel)
+	}
 	for _, quant := range []string{"q4_k_m", "q5_k_m", "q8_0"} {
 		filename := "qwen2.5-1.5b-instruct-" + quant + ".gguf"
 		for _, file := range metadata.Siblings {
@@ -68,6 +85,9 @@ func SearchContext(ctx context.Context, query string) ([]CatalogEntry, error) {
 }
 
 func ResolveContext(ctx context.Context, id string) (CatalogEntry, error) {
+	if id == tinyModel.ID {
+		return tinyModel, nil
+	}
 	entries, err := SearchContext(ctx, id)
 	if err != nil {
 		return CatalogEntry{}, err

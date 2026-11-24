@@ -57,3 +57,16 @@ func TestInterruptedDownloadIsDiscardedAndRerunStartsFresh(t *testing.T) {
 		}
 	}
 }
+
+func TestTinyValidationModelIsPinnedAndNeedsNoCatalogRequest(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	entry, err := ResolveContext(ctx, "smollm2-135m-instruct:q4_k_m")
+	if err != nil || len(entry.SHA256) != 64 || len(entry.Revision) != 40 || entry.SizeBytes > 120_000_000 || !strings.Contains(entry.URL, entry.Revision) {
+		t.Fatal(entry, err)
+	}
+	entries, err := SearchContext(ctx, "smollm2")
+	if err != nil || len(entries) != 1 || entries[0] != entry {
+		t.Fatal(entries, err)
+	}
+}

@@ -1,0 +1,20 @@
+apiVersion: modelgauge.io/v1alpha1
+kind: Benchmark
+metadata:
+  name: remote-smoke
+spec:
+  threads: [1, 2]
+  contexts: [128]
+  stages:
+    - profile: standard-cpu
+      options:
+        warmups: 1
+        repetitions: 3
+    - profile: node-serving
+      options:
+        warmups: 1
+      config:
+        suite: basic
+        concurrency: [1]
+        requests: 3
+        output_tokens: 32

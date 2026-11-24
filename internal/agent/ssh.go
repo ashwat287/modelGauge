@@ -2,6 +2,7 @@ package agent
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -18,13 +19,22 @@ import (
 
 // SSHConnection is a per-node, host-key-pinned controller credential.
 type SSHConnection struct {
-	Address    string `json:"address"`
-	User       string `json:"user"`
-	PrivateKey string `json:"private_key"`
-	HostKey    string `json:"host_key"`
+	Address    string         `json:"address"`
+	User       string         `json:"user"`
+	PrivateKey string         `json:"private_key"`
+	HostKey    string         `json:"host_key"`
+	Jump       *SSHConnection `json:"jump,omitempty"`
 }
 
 func (c SSHConnection) Validate() error {
+	if c.Jump != nil {
+		if c.Jump.Jump != nil {
+			return errors.New("only one SSH jump host is supported")
+		}
+		if err := c.Jump.Validate(); err != nil {
+			return fmt.Errorf("SSH jump host: %w", err)
+		}
+	}
 	if _, _, err := net.SplitHostPort(c.Address); err != nil {
 		return fmt.Errorf("SSH address: %w", err)
 	}
@@ -39,13 +49,35 @@ func (c SSHConnection) Validate() error {
 	}
 	return nil
 }
-func (c SSHConnection) dial(ctx context.Context) (*ssh.Client, error) {
-	if err := c.Validate(); err != nil {
+
+// DialSSH authenticates a connection with a caller-supplied host-key verifier.
+// The deadline covers negotiation; cancellation also interrupts a stalled handshake.
+func DialSSH(ctx context.Context, address string, config *ssh.ClientConfig) (*ssh.Client, error) {
+	// Allow a slow LAN or a waking Mac to complete TCP establishment. SSH
+	// negotiation retains its separate ten-second bound; credentials are not retried.
+	connection, err := (&net.Dialer{Timeout: 20 * time.Second}).DialContext(ctx, "tcp", address)
+	if err != nil {
 		return nil, err
 	}
+	return handshakeSSH(ctx, connection, address, config)
+}
+func handshakeSSH(ctx context.Context, connection net.Conn, address string, config *ssh.ClientConfig) (*ssh.Client, error) {
+	ctx, cancelHandshake := context.WithTimeout(ctx, 10*time.Second)
+	defer cancelHandshake()
+	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
+	stop := context.AfterFunc(ctx, func() { connection.Close() })
+	defer stop()
+	client, chans, requests, err := ssh.NewClientConn(connection, address, config)
+	if err != nil {
+		connection.Close()
+		return nil, err
+	}
+	_ = connection.SetDeadline(time.Time{})
+	return ssh.NewClient(client, chans, requests), nil
+}
+func (c SSHConnection) clientConfig() *ssh.ClientConfig {
 	signer, _ := ssh.ParsePrivateKey([]byte(c.PrivateKey))
 	host, _, _, _, _ := ssh.ParseAuthorizedKey([]byte(c.HostKey))
-	// Negotiate the pinned key rather than another key offered by the same sshd.
 	algorithms := []string{host.Type()}
 	switch host.Type() {
 	case ssh.KeyAlgoRSA:
@@ -53,26 +85,125 @@ func (c SSHConnection) dial(ctx context.Context) (*ssh.Client, error) {
 	case ssh.CertAlgoRSAv01:
 		algorithms = []string{ssh.CertAlgoRSASHA512v01, ssh.CertAlgoRSASHA256v01}
 	}
-	connection, err := (&net.Dialer{Timeout: 10 * time.Second}).DialContext(ctx, "tcp", c.Address)
-	if err != nil {
-		return nil, err
-	}
-	_ = connection.SetDeadline(time.Now().Add(10 * time.Second))
-	stop := context.AfterFunc(ctx, func() { connection.Close() })
-	defer stop()
 	verify := ssh.FixedHostKey(host)
-	client, chans, requests, err := ssh.NewClientConn(connection, c.Address, &ssh.ClientConfig{User: c.User, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyCallback: func(name string, remote net.Addr, actual ssh.PublicKey) error {
+	return &ssh.ClientConfig{User: c.User, Auth: []ssh.AuthMethod{ssh.PublicKeys(signer)}, HostKeyAlgorithms: algorithms, HostKeyCallback: func(name string, remote net.Addr, actual ssh.PublicKey) error {
 		if err := verify(name, remote, actual); err != nil {
 			return fmt.Errorf("%w: expected %s %s, received %s %s", err, host.Type(), ssh.FingerprintSHA256(host), actual.Type(), ssh.FingerprintSHA256(actual))
 		}
 		return nil
-	}, HostKeyAlgorithms: algorithms})
-	if err != nil {
-		connection.Close()
+	}}
+}
+func (c SSHConnection) dial(ctx context.Context) (*ssh.Client, error) {
+	if err := c.Validate(); err != nil {
 		return nil, err
 	}
-	_ = connection.SetDeadline(time.Time{})
-	return ssh.NewClient(client, chans, requests), nil
+	if c.Jump == nil {
+		return DialSSH(ctx, c.Address, c.clientConfig())
+	}
+	jump, err := c.Jump.dial(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("Mac SSH connection: %w", err)
+	}
+	success := false
+	defer func() {
+		if !success {
+			jump.Close()
+		}
+	}()
+	cancel := context.AfterFunc(ctx, func() { jump.Close() })
+	defer cancel()
+	session, err := jump.NewSession()
+	if err != nil {
+		return nil, err
+	}
+	_, err = session.StdinPipe()
+	if err != nil {
+		return nil, err
+	}
+	output, err := session.StdoutPipe()
+	if err != nil {
+		return nil, err
+	}
+	session.Stderr = io.Discard
+	if err = session.Start("connection"); err != nil {
+		return nil, fmt.Errorf("resolve owned benchmark VM: %w", err)
+	}
+	var current SSHConnection
+	if err = json.NewDecoder(io.LimitReader(output, 65536)).Decode(&current); err != nil {
+		return nil, fmt.Errorf("resolve remote benchmark VM: %w", err)
+	}
+	host, port, err := net.SplitHostPort(current.Address)
+	if err != nil || host != "127.0.0.1" || port == "0" || current.User != c.User || current.HostKey != c.HostKey {
+		return nil, errors.New("remote VM SSH identity changed; rerun setup after verifying the machine")
+	}
+	connection, err := jump.DialContext(ctx, "tcp", current.Address)
+	if err != nil {
+		return nil, err
+	}
+	// Close the outer SSH connection whenever the nested connection closes.
+	owned := &jumpConnection{Conn: connection, jump: jump}
+	client, err := handshakeSSH(ctx, owned, current.Address, c.clientConfig())
+	if err != nil {
+		return nil, err
+	}
+	success = true
+	return client, nil
+}
+
+type jumpConnection struct {
+	net.Conn
+	jump *ssh.Client
+}
+
+func (c *jumpConnection) Close() error {
+	err := c.Conn.Close()
+	c.jump.Close()
+	return err
+}
+
+// Command is used only with the dedicated remote-host management credential.
+// JSON keepalives let the helper cancel provisioning if the controller disappears.
+func (c SSHConnection) Command(ctx context.Context, command string, request any, out, log io.Writer) error {
+	session, finish, err := c.session(ctx)
+	if err != nil {
+		return err
+	}
+	defer finish()
+	stdin, err := session.StdinPipe()
+	if err != nil {
+		return err
+	}
+	session.Stdout, session.Stderr = out, log
+	if err = session.Start(command); err != nil {
+		return err
+	}
+	feed, cancel := context.WithCancel(ctx)
+	defer cancel()
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		enc := json.NewEncoder(stdin)
+		if enc.Encode(request) != nil {
+			return
+		}
+		ticker := time.NewTicker(5 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-feed.Done():
+				return
+			case <-ticker.C:
+				if enc.Encode(struct{}{}) != nil {
+					return
+				}
+			}
+		}
+	}()
+	err = session.Wait()
+	cancel()
+	finish()
+	<-done
+	return err
 }
 
 // session owns the connection, cancellation watcher and channel as one lifetime.

@@ -42,6 +42,29 @@ modelgauge setup --control-memory 4 --node-memory 4 --node-cpus 2
 
 Flags do not resize existing VMs. Private configuration and ownership records live in `~/.config/modelgauge/`. For upgrades, reinstall from source and rerun setup while idle. Legacy PostgreSQL workspaces require export and cleanup with the previous version; history is not migrated.
 
+### Benchmark on another Mac over SSH
+
+On the target Mac, enable **Remote Login**, allow your account, and keep the Mac awake and reachable. The supported remote setup requires macOS 13.5+, hardware virtualization, internet access, and enough free disk for the VM. You do not need to install Lima, Homebrew, Go, or ModelGauge there.
+
+```sh
+modelgauge setup --remote-host your-user@192.168.1.50
+```
+
+Verify the printed SSH host-key fingerprint and enter the SSH password at the hidden prompt. For key authentication, add `--identity /path/to/private-key` (an unencrypted bootstrap key); `--host-key SHA256:...` supplies an already verified fingerprint without the trust prompt. Credentials are used once and are not saved; dedicated scoped keys are kept privately by the controller.
+
+The control VM installs pinned Lima in a private directory on the remote Mac, creates a pinned Ubuntu 24.04 **2-vCPU / 3-GiB / 30-GiB VM**, and prepares its worker and llama.cpp. No personal Lima VMs or host-directory mounts are used. Both host and guest SSH keys are pinned. The controller connects through the Mac, so the guest SSH port stays on loopback; the Mac's SSH server must allow TCP forwarding. Subsequent `modelgauge setup` reuses the remote target. Clean up the existing workspace before switching between local and remote nodes.
+
+Start with the pinned **SmolLM2-135M Instruct Q4_K_M** model (~105 MB) and copy [examples/remote-smoke.yaml](examples/remote-smoke.yaml) into your working directory as `benchmark.yaml`:
+
+```sh
+modelgauge model install smollm2-135m-instruct:q4_k_m
+modelgauge validate benchmark.yaml
+modelgauge run benchmark.yaml
+modelgauge export --output ./exports/remote-smoke --include-raw
+```
+
+The example tests both benchmark stages, threads 1/2, a 128-token prompt, and three short serving requests. Dashboards and the 60-second cooldown work as usual. Results describe the Linux VM, not native macOS. `cleanup --delete-vms` also removes the owned remote VM and private installation; unrelated files and VMs remain intact. An unreachable remote Mac blocks cleanup before the controller is removed.
+
 ## 🧪 Install a model and benchmark
 
 ```sh
@@ -238,7 +261,7 @@ flowchart LR
   end
 ```
 
-The controller owns execution through one restricted, host-key-pinned SSH interface. The node needs neither k3s nor a resident agent. **llama-bench exits before llama-server starts**; they never run together. Owned process groups are stopped and reaped on interruption or supervised connection loss. A temporary observer handles cooldown, then exits.
+For remote targets, SSH goes through the target Mac into its owned Linux VM; the controller also manages that VM over the same host connection. The controller owns execution through one restricted, host-key-pinned SSH interface. The node needs neither k3s nor a resident agent. **llama-bench exits before llama-server starts**; they never run together. Owned process groups are stopped and reaped on interruption or supervised connection loss. A temporary observer handles cooldown, then exits.
 
 Benchmark modules own planning, execution, reports, and metrics; platform code transports common plan/result envelopes. Completed configuration/results persist, but interrupted operations are not restored.
 

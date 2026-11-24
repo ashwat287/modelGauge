@@ -25,6 +25,7 @@ import (
 type Config struct {
 	Executor   *agent.ControllerExecutor
 	AdminToken string
+	DataDir    string
 }
 type Server struct {
 	cooldown time.Duration
@@ -40,14 +41,12 @@ func New(store *controller.Store, config Config) *Server {
 }
 func (s *Server) Handler() http.Handler { return s.mux }
 func (s *Server) routes() {
+	s.remoteRoutes()
 	s.mux.HandleFunc("GET /healthz", func(w http.ResponseWriter, r *http.Request) {
 		writeJSON(w, 200, map[string]any{"status": "ok", "version": buildinfo.Version, "commit": buildinfo.Commit, "active": s.config.Executor != nil && s.config.Executor.Active()})
 	})
 	s.mux.HandleFunc("POST /v1/cancel", s.requireAdmin(func(w http.ResponseWriter, r *http.Request) {
-		nodes, err := s.store.ListNodes(r.Context())
-		if err == nil && len(nodes) == 1 {
-			err = s.config.Executor.Pause(nodes[0].ID, true)
-		}
+		err := s.config.Executor.Pause("benchmark-node", true)
 		s.respond(w, map[string]string{"status": "stopped"}, err)
 	}))
 	s.mux.HandleFunc("GET /metrics", func(w http.ResponseWriter, r *http.Request) {

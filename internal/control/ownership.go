@@ -60,6 +60,8 @@ type ownershipManager struct {
 	directory string
 	binary    func(context.Context, string) ([]byte, error)
 	run       func(context.Context, []string, []byte) ([]byte, error)
+	remote    bool
+	image     string
 }
 type ownershipContextKey struct{}
 
@@ -255,9 +257,13 @@ func reservedFiles(role string, port int) []string {
 // provisionVM journals ownership before installing packages or writing app data.
 // Reusing a VM never grants permission to delete that VM.
 func provisionVM(ctx context.Context, name, role string, cpus, memory, disk, port int, log io.Writer, options NodeOptions) (context.Context, func() error, error) {
-	m, err := newOwnershipManager()
-	if err != nil {
-		return ctx, nil, err
+	m := options.manager
+	if m == nil {
+		var err error
+		m, err = newOwnershipManager()
+		if err != nil {
+			return ctx, nil, err
+		}
 	}
 	m.binary = func(_ context.Context, arch string) ([]byte, error) { return nodeBinary(arch) }
 	return m.provision(ctx, name, role, cpus, memory, disk, port, log)
@@ -336,7 +342,14 @@ func (m *ownershipManager) provision(ctx context.Context, name, role string, cpu
 				createArgs = append(createArgs, "--set", fmt.Sprintf(".ssh.localPort = %d", listener.Addr().(*net.TCPAddr).Port))
 				listener.Close()
 			}
-			createArgs = append(createArgs, "template:ubuntu")
+			if m.remote {
+				createArgs = append(createArgs, "--vm-type=vz", "--set", ".ssh.overVsock = false", "--set", ".mounts = []", "--set", `.portForwards = [{"guestIP": "0.0.0.0", "guestPortRange": [1, 65535], "ignore": true}]`)
+			}
+			if m.image != "" {
+				createArgs = append(createArgs, m.image)
+			} else {
+				createArgs = append(createArgs, "template:ubuntu")
+			}
 			v.BootstrapState = "creating"
 			registry.VMs = append(registry.VMs, v)
 			index = len(registry.VMs) - 1
